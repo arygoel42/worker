@@ -7,7 +7,11 @@ const {
   applyLabelToEmail,
   fetchEmailHistoryWithRetry,
   fetchEmailHistoryAndApplyLabel,
+  getMessageDetails,
 } = require("./gmailService.js");
+
+const { classifyEmail } = require("./openai.js");
+let emailContent = "";
 
 const taskQueue = new Bull("task-queue", {
   redis: {
@@ -24,7 +28,7 @@ console.log(
 );
 
 taskQueue.process(async (job) => {
-  const { email, historyId, accessToken } = job.data;
+  const { email, historyId, accessToken, rules } = job.data;
   console.log("Worker running");
 
   try {
@@ -40,6 +44,12 @@ taskQueue.process(async (job) => {
 
     const priorityLabelId = await getOrCreatePriorityLabel(accessToken);
     for (const message of userMessages) {
+      emailContent = await getMessageDetails(accessToken, message.id);
+
+      console.log("Email content:", emailContent, rules);
+
+      // await classifyEmail(emailContent, rules);
+
       console.log("Applying label to message:", message.id);
       await applyLabelToEmail(accessToken, message.id, priorityLabelId);
     }
