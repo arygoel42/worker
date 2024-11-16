@@ -352,14 +352,11 @@ function createForwardingMessage(forwardToEmail, originalEmailBase64) {
   const originalTo = toMatch ? toMatch[1] : 'Unknown Receiver';
 
   const forwardedHeader = [
-    '',
-    '',
     '---------- Forwarded message ---------',
     `From: ${originalFrom}`,
     `Date: ${originalDate}`,
     `Subject: ${originalSubject}`,
     `To: ${originalTo}`,
-    '',
     '',
   ].join('\n');
   console.log(forwardedHeader);
@@ -385,6 +382,17 @@ function createForwardingMessage(forwardToEmail, originalEmailBase64) {
     '',
     `--${boundary}--`,
   ].join('\n');
+
+  // const forwardingMessage = [
+  //   `From: me`,
+  //   `To: ${forwardToEmail}`,
+  //   `Subject: ${subject}`,
+  //   `Original From: ${originalFrom}`,
+  //   `MIME-Version: 1.0`,
+  //   `Content-Type: message/rfc822`,
+  //   '',
+  //   originalEmail,
+  // ].join('\n');
 
   return forwardingMessage;
 }
