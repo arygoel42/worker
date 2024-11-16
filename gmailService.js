@@ -383,17 +383,6 @@ function createForwardingMessage(forwardToEmail, originalEmailBase64) {
     `--${boundary}--`,
   ].join('\n');
 
-  // const forwardingMessage = [
-  //   `From: me`,
-  //   `To: ${forwardToEmail}`,
-  //   `Subject: ${subject}`,
-  //   `Original From: ${originalFrom}`,
-  //   `MIME-Version: 1.0`,
-  //   `Content-Type: message/rfc822`,
-  //   '',
-  //   originalEmail,
-  // ].join('\n');
-
   return forwardingMessage;
 }
 
