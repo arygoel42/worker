@@ -3,7 +3,7 @@ const path = require("path");
 const dotenv = require("dotenv");
 
 const result = dotenv.config({
-  path: path.resolve(__dirname, '.env')
+  path: path.resolve(__dirname, ".env"),
 });
 
 envvars = result.parsed;
@@ -13,15 +13,18 @@ const openai = new OpenAI({
 });
 
 async function classifyEmail(emailContent, rules) {
+  if (!emailContent || !rules) {
+    return null;
+  }
   const ruleKeys = Object.keys(rules);
-  
-  const ruleDescriptions = ruleKeys.map(key => {
+
+  const ruleDescriptions = ruleKeys.map((key) => {
     const rule = rules[key];
     return `- ${rule.action}: ${rule.prompt}`;
   });
 
   const prompt = `Here are some rules for handling emails:
-${ruleDescriptions.join('\n')}
+${ruleDescriptions.join("\n")}
 
 Given the following email, identify the rule that best correlates to the email content, if any:
 "${emailContent}"
@@ -34,15 +37,18 @@ Return only the key (as a number starting from 0) of the rule that best applies.
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "You are an assistant that helps classify emails based on rules." },
-        { role: "user", content: prompt }
-      ]
+        {
+          role: "system",
+          content:
+            "You are an assistant that helps classify emails based on rules.",
+        },
+        { role: "user", content: prompt },
+      ],
     });
 
     console.log("Completion:", completion.choices[0].message.content);
     const ruleKey = parseInt(completion.choices[0].message.content.trim(), 10);
     return ruleKey;
-
   } catch (error) {
     console.error("Error classifying email:", error);
     return null;

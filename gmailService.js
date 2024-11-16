@@ -46,7 +46,44 @@ async function getMessageDetails(accessToken, messageId) {
       httpsAgent: agent,
     });
 
-    console.log("Message Details:", response.data); // Output the message content
+    // Log the entire message to see its structure
+    console.log("Message Details:", response.data);
+
+    // Extract the payload
+    const payload = response.data.payload;
+
+    // Function to get email content from the payload
+    const getEmailContent = (payload) => {
+      // Check if this is a simple message with body data (text or HTML)
+      if (payload.body && payload.body.data) {
+        const encodedContent = payload.body.data;
+        const decodedContent = Buffer.from(encodedContent, "base64").toString(
+          "utf-8"
+        );
+        return decodedContent;
+      }
+
+      // Otherwise, look through the parts for text or HTML content
+      if (payload.parts) {
+        for (let part of payload.parts) {
+          if (part.mimeType === "text/plain" || part.mimeType === "text/html") {
+            const encodedContent = part.body.data;
+            const decodedContent = Buffer.from(
+              encodedContent,
+              "base64"
+            ).toString("utf-8");
+            return decodedContent;
+          }
+        }
+      }
+
+      return "No email content found";
+    };
+
+    // Get the email content from the payload
+    const emailContent = getEmailContent(payload);
+    console.log("Email Content:", emailContent);
+    return emailContent;
   } catch (error) {
     console.error(
       `Error fetching details for message ID ${messageId}:`,
