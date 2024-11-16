@@ -260,6 +260,202 @@ async function getOrCreatePriorityLabel(accessToken) {
   }
 }
 
+async function archiveEmail(accessToken, messageId) {
+  const archiveEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`;
+
+  try {
+    await axios.post(
+      archiveEndpoint,
+      {
+        removeLabelIds: ["INBOX"],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    console.log(`Email ${messageId} archived successfully.`);
+  } catch (error) {
+    console.error(
+      `Error archiving email ID ${messageId}:`,
+      error.response ? error.response.data : error.message
+    );
+  }
+}
+
+async function forwardEmail(accessToken, messageId, forwardToEmail) {
+  try {
+    const emailContentEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`;
+    const sendEmailEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/send`;
+
+    const response = await axios.get(emailContentEndpoint, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+      params: {
+        format: 'raw',
+      },
+    });
+
+    const rawEmailData = response.data.raw;
+
+    const originalEmailBase64 = rawEmailData.replace(/-/g, '+').replace(/_/g, '/');
+
+    const forwardingMessage = createForwardingMessage(
+      forwardToEmail,
+      originalEmailBase64
+    );
+
+    const encodedMessage = Buffer.from(forwardingMessage)
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+
+    await axios.post(
+      sendEmailEndpoint,
+      { raw: encodedMessage },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    console.log(`Email ${messageId} forwarded to ${forwardToEmail} successfully.`);
+  } catch (error) {
+    console.error(
+      `Error forwarding email ID ${messageId}:`,
+      error.response ? error.response.data : error.message
+    );
+  }
+}
+
+function createForwardingMessage(forwardToEmail, originalEmailBase64) {
+  const originalEmail = Buffer.from(originalEmailBase64, 'base64').toString('utf-8');
+
+  const subjectMatch = originalEmail.match(/^Subject: (.*)$/m);
+  const originalSubject = subjectMatch ? subjectMatch[1] : 'No Subject';
+  const subject = originalSubject.startsWith('Fwd:') ? originalSubject : `Fwd: ${originalSubject}`;
+
+  const dateMatch = originalEmail.match(/^Date: (.*)$/m);
+  const originalDate = dateMatch ? dateMatch[1] : 'Unknown Date';
+
+  const fromMatch = originalEmail.match(/^From: (.*)$/m);
+  const originalFrom = fromMatch ? fromMatch[1] : 'Unknown Sender';
+
+  const toMatch = originalEmail.match(/^To: (.*)$/m);
+  const originalTo = toMatch ? toMatch[1] : 'Unknown Receiver';
+
+  const forwardedHeader = [
+    '',
+    '',
+    '---------- Forwarded message ---------',
+    `From: ${originalFrom}`,
+    `Date: ${originalDate}`,
+    `Subject: ${originalSubject}`,
+    `To: ${originalTo}`,
+    '',
+    '',
+  ].join('\n');
+  console.log(forwardedHeader);
+
+  const boundary = '----=_Part_0_123456789.987654321';
+
+  const forwardingMessage = [
+    `From: me`,
+    `To: ${forwardToEmail}`,
+    `Subject: ${subject}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    '',
+    `--${boundary}`,
+    `Content-Type: text/plain; charset=utf-8`,
+    '',
+    forwardedHeader,
+    '',
+    `--${boundary}`,
+    `Content-Type: message/rfc822`,
+    '',
+    originalEmail,
+    '',
+    `--${boundary}--`,
+  ].join('\n');
+
+  return forwardingMessage;
+}
+
+async function createForwardingAddress(accessToken, forwardingEmail) {
+  const forwardingAddressEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/settings/forwardingAddresses`;
+  
+  try {
+    const response = await axios.post(
+      forwardingAddressEndpoint,
+      { forwardingEmail },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    console.log(`Forwarding address ${forwardingEmail} created. Check your inbox to verify it if necessary.`);
+  } catch (error) {
+    console.error(
+      `Error creating forwarding address:`,
+      error.response ? error.response.data : error.message
+    );
+    return;
+  }
+}
+
+async function checkForwardingVerification(accessToken, forwardingEmail) {
+  const listEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/settings/forwardingAddresses`;
+  
+  const response = await axios.get(listEndpoint, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  const forwardingAddresses = response.data.forwardingAddresses || [];
+  return forwardingAddresses.some(
+    (address) => address.forwardingEmail === forwardingEmail && address.verificationStatus === 'accepted'
+  );
+}
+
+async function createFilter(accessToken, forwardingEmail, criteria) {
+  const filterEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/settings/filters`;
+
+  try {
+    const response = await axios.post(
+      filterEndpoint,
+      {
+        criteria,
+        action: { forward: forwardingEmail },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    console.log(`Filter created successfully for forwarding to ${forwardingEmail}.`);
+  } catch (error) {
+    console.error(
+      `Error creating filter for forwarding:`,
+      error.response ? error.response.data : error.message
+    );
+  }
+}
+
 module.exports = {
   accessGmailApi,
   getMessageDetails,
@@ -269,4 +465,9 @@ module.exports = {
   fetchEmailHistoryAndApplyLabel,
   getOrCreatePriorityLabel,
   fetchEmailHistoryWithRetry,
+  archiveEmail,
+  forwardEmail,
+  createForwardingAddress,
+  checkForwardingVerification,
+  createFilter,
 };
