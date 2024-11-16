@@ -391,7 +391,7 @@ function createForwardingMessage(forwardToEmail, originalEmailBase64) {
   const forwardedHeader = [
     '---------- Forwarded message ---------',
     `From: ${originalFrom}`,
-    `Date: ${originalDate}`,
+    `Date: ${convertToEST(originalDate)}`,
     `Subject: ${originalSubject}`,
     `To: ${originalTo}`,
     '',
@@ -421,6 +421,28 @@ function createForwardingMessage(forwardToEmail, originalEmailBase64) {
   ].join('\n');
 
   return forwardingMessage;
+}
+
+function convertToEST(dateString) {
+  const originalDate = new Date(dateString);
+
+  const estDate = new Date(originalDate.toLocaleString("en-US", { timeZone: "America/New_York" }));
+
+  const options = {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+    timeZone: 'America/New_York',
+  };
+
+  const formattedDate = estDate.toLocaleString('en-US', options);
+
+  return formattedDate.replace(/GMT[-+]\d{1,2}/, 'EST');
 }
 
 async function createForwardingAddress(accessToken, forwardingEmail) {
