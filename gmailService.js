@@ -297,6 +297,78 @@ async function getOrCreatePriorityLabel(accessToken) {
   }
 }
 
+async function favoriteEmail(accessToken, messageId) {
+  const messageEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`;
+
+  // Not sure if it would work, but after some research, The only way to favourite an email is by labeing it as STARRED  
+  // labeling an email as STARRED is how gmail knows that it is a favourited email
+  try {
+    await axios.post(
+      messageEndpoint,
+      {
+        addLabelIds: ["STARRED"], // Adds the "STARRED" label
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    // console.log(`Label ${labelId} applied to email ${messageId}`);
+  } catch (error) {
+    console.error(
+      `Error applying label to message ID ${messageId}:`,
+      error.response ? error.response.data : error.message
+    );
+  }
+}
+
+async function createDraftEmail(accessToken, threadId, to, subject, messageDescription, messageId) {
+  const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
+
+  const emailContent = [
+    `To: ${to}`,
+    `Subject: ${subject}`, // Add a subject line
+    `In-Reply-To: <${messageId}>`, // The Message-ID of the original email you're replying to
+    `References: <${messageId}>`, // Include original Message-ID for threading
+    "",
+    messageDescription,
+  ].join("\r\n");
+
+  // Properly encode the message
+  const encodedMessage = Buffer.from(emailContent)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, ""); // Make it URL-safe by replacing special characters
+
+  try {
+    const response = await axios.post(
+      draftEndpoint,
+      {
+        message: {
+          raw: encodedMessage, // Pass the correctly encoded message
+          threadId: threadId,
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    console.log(`Draft created with ID: ${response.data.id}`);
+  } catch (error) {
+    console.error(
+      "Error creating draft email:",
+      error.response ? error.response.data : error.message
+    );
+  }
+}
+
+
 async function archiveEmail(accessToken, messageId) {
   const archiveEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`;
 
@@ -391,7 +463,7 @@ function createForwardingMessage(forwardToEmail, originalEmailBase64) {
   const forwardedHeader = [
     '---------- Forwarded message ---------',
     `From: ${originalFrom}`,
-    `Date: ${originalDate}`,
+    `Date: ${convertToEST(originalDate)}`,
     `Subject: ${originalSubject}`,
     `To: ${originalTo}`,
     '',
@@ -421,6 +493,28 @@ function createForwardingMessage(forwardToEmail, originalEmailBase64) {
   ].join('\n');
 
   return forwardingMessage;
+}
+
+function convertToEST(dateString) {
+  const originalDate = new Date(dateString);
+
+  const estDate = new Date(originalDate.toLocaleString("en-US", { timeZone: "America/New_York" }));
+
+  const options = {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+    timeZone: 'America/New_York',
+  };
+
+  const formattedDate = estDate.toLocaleString('en-US', options);
+
+  return formattedDate.replace(/GMT[-+]\d{1,2}/, 'EST');
 }
 
 async function createForwardingAddress(accessToken, forwardingEmail) {
@@ -504,4 +598,6 @@ module.exports = {
   createForwardingAddress,
   checkForwardingVerification,
   createFilter,
+  createDraftEmail,
+  favoriteEmail,
 };

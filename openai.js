@@ -3,7 +3,7 @@ const path = require("path");
 const dotenv = require("dotenv");
 
 const result = dotenv.config({
-  path: path.resolve(__dirname, ".env"),
+  path: path.resolve(__dirname, '.env')
 });
 
 envvars = result.parsed;
@@ -13,18 +13,15 @@ const openai = new OpenAI({
 });
 
 async function classifyEmail(emailContent, rules) {
-  if (!emailContent || !rules) {
-    return null;
-  }
   const ruleKeys = Object.keys(rules);
-
-  const ruleDescriptions = ruleKeys.map((key) => {
+  
+  const ruleDescriptions = ruleKeys.map(key => {
     const rule = rules[key];
     return `- ${rule.action}: ${rule.prompt}`;
   });
 
   const prompt = `Here are some rules for handling emails:
-${ruleDescriptions.join("\n")}
+${ruleDescriptions.join('\n')}
 
 Given the following email, identify the rule that best correlates to the email content, if any:
 "${emailContent}"
@@ -37,18 +34,15 @@ Return only the key (as a number starting from 0) of the rule that best applies.
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        {
-          role: "system",
-          content:
-            "You are an assistant that helps classify emails based on rules.",
-        },
-        { role: "user", content: prompt },
-      ],
+        { role: "system", content: "You are an assistant that helps classify emails based on rules." },
+        { role: "user", content: prompt }
+      ]
     });
 
     console.log("Completion:", completion.choices[0].message.content);
     const ruleKey = parseInt(completion.choices[0].message.content.trim(), 10);
     return ruleKey;
+
   } catch (error) {
     console.error("Error classifying email:", error);
     return null;
@@ -58,7 +52,7 @@ Return only the key (as a number starting from 0) of the rule that best applies.
 // const emailContent = "This is a newsletter about the latest tech trendsWelcome back to Week in Review. This week, we’re unpacking the latest layoffs at Mozilla, Perplexity offering to cross a picket line, and Apple warning investors that it might never top the iPhone. Let’s get into it. The Mozilla Foundation laid off 30% of its employees in the second round of layoffs for the Firefox browser maker this year. Executive director Nabiha Syed confirmed that two of the foundation’s major divisions — advocacy and global programs — are “no longer a part of our structure.” Mozilla's communications chief, Brandon Borrman, told TechCrunch that advocacy “is still a central tenet” of the company’s work but did not provide specifics. Anduril is considering building its first major manufacturing plant, a 5-million-square-foot facility known as “Arsenal-1,” in Arizona, Ohio, or Texas following its $1.5 billion round, according to someone familiar with the matter. When TechCrunch asked an Anduril spokesperson if the defense tech company was now choosing between these three locations for its factory, she responded, “That is incorrect,” but she would not specify what part exactly was incorrect.Video game giant Activision fixed a bug in its anti-cheat system that it said affected “a small number of legitimate player accounts” that were getting banned because of it. But according to the hacker who found the bug and was exploiting it, they were able to ban “thousands upon thousands” of Call of Duty players, who they framed as cheaters. The hacker spoke to TechCrunch about the exploit and told their side of the story." ;
 // const emailContent = "This is a high priority email from your boss. Please respond ASAP.";
 
-// // // Example rules provided by the user
+// // Example rules provided by the user
 // const rules = {
 //   0: {
 //     action: "Label High Priority Emails",
@@ -72,12 +66,6 @@ Return only the key (as a number starting from 0) of the rule that best applies.
 //   }
 // };
 
-// // const number = 0; // or 1
-
-// // const rule = rules[number];
-// // const ruleType = rule.type[0].type;
-// // console.log(ruleType);
-
 // classifyEmail(emailContent, rules).then(ruleKey => {
 //   if (ruleKey !== null && rules[ruleKey]) {
 //     console.log(`The email should be handled by rule: ${ruleKey} - ${rules[ruleKey].action}`);
@@ -85,8 +73,5 @@ Return only the key (as a number starting from 0) of the rule that best applies.
 //     console.log("No suitable rule found.");
 //   }
 // });
-
-
-
 
 module.exports = { classifyEmail };
