@@ -67,8 +67,10 @@ taskQueue.on("failed", (job, err) => {
   );
 });
 
-taskQueue.on("completed", (job) => {
+taskQueue.on("completed", async (job) => {
   console.log(
     `Job completed for email: ${job.data.email}, historyId: ${job.data.historyId}`
   );
+  await job.remove(); // Explicitly remove the job after completion
+  return;
 });
