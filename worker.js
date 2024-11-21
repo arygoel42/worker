@@ -7,6 +7,7 @@ const {
   applyLabelToEmail,
   fetchEmailHistoryWithRetry,
   fetchEmailHistoryAndApplyLabel,
+  getMessageDetails,
 } = require("./gmailService.js");
 
 const taskQueue = new Bull("task-queue", {
@@ -41,6 +42,9 @@ taskQueue.process(async (job) => {
     const priorityLabelId = await getOrCreatePriorityLabel(accessToken);
     for (const message of userMessages) {
       console.log("Applying label to message:", message.id);
+      const emailContent = await getMessageDetails(accessToken, message.id);
+      console.log(emailContent);
+      //getclassfy function
       await applyLabelToEmail(accessToken, message.id, priorityLabelId);
     }
 
