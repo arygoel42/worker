@@ -249,7 +249,7 @@ async function fetchEmailHistoryWithRetry(
 }
 
 // Helper function to get or create a label
-async function getOrCreatePriorityLabel(accessToken) {
+async function getOrCreatePriorityLabel(accessToken, name) {
   const listLabelsEndpoint =
     "https://gmail.googleapis.com/gmail/v1/users/me/labels";
   const createLabelEndpoint =
@@ -264,10 +264,10 @@ async function getOrCreatePriorityLabel(accessToken) {
     });
 
     const existingLabel = listResponse.data.labels.find(
-      (label) => label.name === "Priority"
+      (label) => label.name === name
     );
     if (existingLabel) {
-      console.log(`Label "Priority" exists with ID: ${existingLabel.id}`);
+      console.log(`Label ${name} exists with ID: ${existingLabel.id}`);
       return existingLabel.id;
     }
 
@@ -275,7 +275,7 @@ async function getOrCreatePriorityLabel(accessToken) {
     const createResponse = await axios.post(
       createLabelEndpoint,
       {
-        name: "Priority",
+        name: name,
         labelListVisibility: "labelShow",
         messageListVisibility: "show",
       },
@@ -287,7 +287,7 @@ async function getOrCreatePriorityLabel(accessToken) {
       }
     );
 
-    console.log(`Created label "Priority" with ID: ${createResponse.data.id}`);
+    console.log(`Created label ${name} with ID: ${createResponse.data.id}`);
     return createResponse.data.id;
   } catch (error) {
     console.error(

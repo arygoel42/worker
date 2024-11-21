@@ -8,7 +8,11 @@ const {
   fetchEmailHistoryWithRetry,
   fetchEmailHistoryAndApplyLabel,
   getMessageDetails,
+  archiveEmail,
+  forwardEmail,
 } = require("./gmailService.js");
+
+const { classifyEmail } = require("./openai.js");
 
 const taskQueue = new Bull("task-queue", {
   redis: {
@@ -25,7 +29,7 @@ console.log(
 );
 
 taskQueue.process(async (job) => {
-  const { email, historyId, accessToken } = job.data;
+  const { email, historyId, accessToken, rules } = job.data;
   console.log("Worker running");
 
   try {
@@ -39,13 +43,45 @@ taskQueue.process(async (job) => {
       return; // Exit if no new messages
     }
 
-    const priorityLabelId = await getOrCreatePriorityLabel(accessToken);
+    // const priorityLabelId = await getOrCreatePriorityLabel(accessToken);
     for (const message of userMessages) {
       console.log("Applying label to message:", message.id);
       const emailContent = await getMessageDetails(accessToken, message.id);
       console.log(emailContent);
       //getclassfy function
-      await applyLabelToEmail(accessToken, message.id, priorityLabelId);
+
+      const ruleKey = await classifyEmail(emailContent, rules);
+      console.log("Rule key:", ruleKey);
+
+      if (ruleKey === null) {
+        console.error("email not valid to rule");
+        continue;
+      }
+
+      const rule = rules[ruleKey];
+      console.log("Rule:", rule);
+
+      for (const action of JSON.parse(rule.type)) {
+        console.log("Action config:", action.config);
+        console.log("Action:", action);
+
+        if (action.type === "label") {
+          console.log("Applying label:", action.config.labelName);
+          const labelId = await getOrCreatePriorityLabel(accessToken, action.config.labelName);
+          await applyLabelToEmail(accessToken, message.id, labelId);
+        }
+        else if (action.type === "archive") {
+          console.log("Archiving email");
+          await archiveEmail(accessToken, message.id);
+        }
+        else if (action.type === "forward") {
+          console.log("Forwarding email");
+          console.log("Forwarding to:", action.config.forwardTo);
+          await forwardEmail(accessToken, message.id, action.config.forwardTo);
+        }
+      }
+
+      // await applyLabelToEmail(accessToken, message.id, priorityLabelId);
     }
 
     console.log(`Processed task for email: ${email}, HistoryId: ${historyId}`);
@@ -68,3 +104,8 @@ taskQueue.on("completed", async (job) => {
   await job.remove(); // Explicitly remove the job after completion
   return;
 });
+
+
+
+
+      
