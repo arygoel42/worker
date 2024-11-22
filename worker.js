@@ -53,12 +53,12 @@ taskQueue.process(async (job) => {
       const ruleKey = await classifyEmail(emailContent, rules);
       console.log("Rule key:", ruleKey);
 
-      if (ruleKey === null) {
+      if (ruleKey === 'Null') {
         console.error("email not valid to rule");
         continue;
       }
 
-      const rule = rules[ruleKey];
+      const rule = rules[parseInt(ruleKey)];
       console.log("Rule:", rule);
 
       for (const action of JSON.parse(rule.type)) {
@@ -79,6 +79,7 @@ taskQueue.process(async (job) => {
           console.log("Forwarding to:", action.config.forwardTo);
           await forwardEmail(accessToken, message.id, action.config.forwardTo);
         }
+        
       }
 
       // await applyLabelToEmail(accessToken, message.id, priorityLabelId);

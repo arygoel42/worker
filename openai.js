@@ -23,10 +23,10 @@ async function classifyEmail(emailContent, rules) {
   const prompt = `Here are some rules for handling emails:
 ${ruleDescriptions.join('\n')}
 
-Given the following email, identify the rule that best correlates to the email content, if any:
+Given the following email, identify the rule that best correlates to the email content, if any. If none of the rules apply strongly, return "Null":
 "${emailContent}"
 
-Return only the key (as a number starting from 0) of the rule that best applies.`;
+Return only the key (as a number starting from 0) of the rule that best applies or "Null" if no rule applies.`;
 
   console.log("Prompt:", prompt);
 
@@ -39,8 +39,9 @@ Return only the key (as a number starting from 0) of the rule that best applies.
       ]
     });
 
-    console.log("Completion:", completion.choices[0].message.content);
-    const ruleKey = parseInt(completion.choices[0].message.content.trim(), 10);
+    console.log("Completion:", completion.choices[0].message.content.trim());
+    // const ruleKey = parseInt(completion.choices[0].message.content.trim(), 10);
+    const ruleKey = completion.choices[0].message.content.trim();
     return ruleKey;
 
   } catch (error) {
