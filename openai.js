@@ -75,4 +75,30 @@ Return only the key (as a number starting from 0) of the rule that best applies 
 //   }
 // });
 
-module.exports = { classifyEmail };
+async function createDraftEmail(emailContent) {
+  if (!emailContent) {
+    return null;
+  }
+  const prompt = "Here is an email for which we need to draft a response: ${emailContent} Please complete the email draft with a suitable response. The response should be concise and should address the main points of the email. It should also be of the same tone as the original email. Only respond with the body of the draft email.";
+  console.log("Prompt:", prompt);
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "You are an assistant that helps draft emails.",
+        },
+        { role: "user", content: prompt },
+      ],
+    });
+    console.log("Completion:", completion.choices[0].message.content);
+    return completion.choices[0].message.content;
+  } catch (error) {
+    console.error("Error creating draft email:", error);
+    return null;
+  }
+}
+
+module.exports = { createDraftEmail, classifyEmail };
+

@@ -87,7 +87,7 @@ taskQueue.process(async (job) => {
         } 
         else if (action.type === "draft") {
           console.log("drafting reply email") 
-          await createDraftEmail(accessToken, message.threadId, "recipient@example.com", "Test subject", "Temp Description", message.id);
+          await createDraftEmail(emailContent);
         }
       }
 

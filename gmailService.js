@@ -324,49 +324,49 @@ async function favoriteEmail(accessToken, messageId) {
   }
 }
 
-async function createDraftEmail(accessToken, threadId, to, subject, messageDescription, messageId) {
-  const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
+// async function createDraftEmail(accessToken, threadId, to, subject, messageDescription, messageId) {
+//   const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
 
-  const emailContent = [
-    `To: ${to}`,
-    `Subject: ${subject}`, // Add a subject line
-    `In-Reply-To: <${messageId}>`, // The Message-ID of the original email you're replying to
-    `References: <${messageId}>`, // Include original Message-ID for threading
-    "",
-    messageDescription,
-  ].join("\r\n");
+//   const emailContent = [
+//     `To: ${to}`,
+//     `Subject: ${subject}`, // Add a subject line
+//     `In-Reply-To: <${messageId}>`, // The Message-ID of the original email you're replying to
+//     `References: <${messageId}>`, // Include original Message-ID for threading
+//     "",
+//     messageDescription,
+//   ].join("\r\n");
 
-  // Properly encode the message
-  const encodedMessage = Buffer.from(emailContent)
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, ""); // Make it URL-safe by replacing special characters
+//   // Properly encode the message
+//   const encodedMessage = Buffer.from(emailContent)
+//     .toString("base64")
+//     .replace(/\+/g, "-")
+//     .replace(/\//g, "_")
+//     .replace(/=+$/, ""); // Make it URL-safe by replacing special characters
 
-  try {
-    const response = await axios.post(
-      draftEndpoint,
-      {
-        message: {
-          raw: encodedMessage, // Pass the correctly encoded message
-          threadId: threadId,
-        },
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-    console.log(`Draft created with ID: ${response.data.id}`);
-  } catch (error) {
-    console.error(
-      "Error creating draft email:",
-      error.response ? error.response.data : error.message
-    );
-  }
-}
+//   try {
+//     const response = await axios.post(
+//       draftEndpoint,
+//       {
+//         message: {
+//           raw: encodedMessage, // Pass the correctly encoded message
+//           threadId: threadId,
+//         },
+//       },
+//       {
+//         headers: {
+//           Authorization: `Bearer ${accessToken}`,
+//           "Content-Type": "application/json",
+//         },
+//       }
+//     );
+//     console.log(`Draft created with ID: ${response.data.id}`);
+//   } catch (error) {
+//     console.error(
+//       "Error creating draft email:",
+//       error.response ? error.response.data : error.message
+//     );
+//   }
+// }
 
 
 async function archiveEmail(accessToken, messageId) {
