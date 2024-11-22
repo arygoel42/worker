@@ -324,16 +324,67 @@ async function favoriteEmail(accessToken, messageId) {
   }
 }
 
+// async function createDraft(accessToken, threadId, messageDescription, messageId, toEmail) {
+//   const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
+
+//   console.log("toEmail:", toEmail); 
+
+//   const emailContent = [
+//     `To: ${toEmail}`, // Use the extracted recipient email address
+//     // `Subject: Test Draft Email`,
+//     `In-Reply-To: <${messageId}>`,
+//     `References: <${messageId}>`,
+//     "",
+//     messageDescription,
+//   ].join("\r\n");
+
+//   // Encode the email
+//   const encodedMessage = Buffer.from(emailContent)
+//     .toString("base64")
+//     .replace(/\+/g, "-")
+//     .replace(/\//g, "_")
+//     .replace(/=+$/, ""); // Make it URL-safe by replacing special characters
+
+//   try {
+//     const response = await axios.post(
+//       draftEndpoint,
+//       {
+//         message: {
+//           raw: encodedMessage,
+//           threadId: threadId,
+//         },
+//       },
+//       {
+//         headers: {
+//           Authorization: `Bearer ${accessToken}`,
+//           "Content-Type": "application/json",
+//         },
+//       }
+//     );
+//     console.log(`Draft created with ID: ${response.data.id}`);
+//   } catch (error) {
+//     console.error(
+//       "Error creating draft email:",
+//       error.response ? error.response.data : error.message
+//     );
+//   }
+// }
+
 async function createDraft(accessToken, threadId, messageDescription, messageId, toEmail) {
   const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
 
+  // Create proper email MIME message
   const emailContent = [
-    `To: ${toEmail}`, // Use the extracted recipient email address
-    // `Subject: Test Draft Email`,
-    `In-Reply-To: <${threadId}>`,
-    `References: <${messageId}>`,
-    "",
-    messageDescription,
+    'Content-Type: text/plain; charset="UTF-8"',
+    "MIME-Version: 1.0",
+    "Content-Transfer-Encoding: 7bit",
+    `To: ${toEmail}`,
+    "Subject: Re: ", // "Re:" prefix for replies
+    `In-Reply-To: ${messageId}`,
+    `References: ${messageId}`,
+    `Thread-Id: ${threadId}`,
+    "",  // Empty line separates headers from body
+    messageDescription
   ].join("\r\n");
 
   // Encode the email
@@ -341,7 +392,7 @@ async function createDraft(accessToken, threadId, messageDescription, messageId,
     .toString("base64")
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
-    .replace(/=+$/, ""); // Make it URL-safe by replacing special characters
+    .replace(/=+$/, "");
 
   try {
     const response = await axios.post(
@@ -360,13 +411,16 @@ async function createDraft(accessToken, threadId, messageDescription, messageId,
       }
     );
     console.log(`Draft created with ID: ${response.data.id}`);
+    return response.data;
   } catch (error) {
     console.error(
       "Error creating draft email:",
       error.response ? error.response.data : error.message
     );
+    throw error;
   }
 }
+
 
 async function getOriginalEmailDetails(accessToken, messageId) {
   const emailEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`;
@@ -392,7 +446,24 @@ async function getOriginalEmailDetails(accessToken, messageId) {
     console.log("To Email:", toEmail);
     console.log("From Email:", fromEmail);
 
-    return  fromEmail;
+    const emailRegex = /<([^>]+)>/;
+
+    const match = fromEmail.match(emailRegex);
+
+    var matchEmail;
+
+    if (match === null) {
+      console.log("No email found in From header:", fromEmail);
+      matchEmail = fromEmail;
+      return matchEmail;
+    }
+    else {
+      matchEmail = match[1];
+      console.log("Email found:", matchEmail);
+      return matchEmail;
+    }
+
+
   } catch (error) {
     console.error(
       "Error fetching email details:",
