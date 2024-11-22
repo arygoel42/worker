@@ -11,10 +11,9 @@ const {
   archiveEmail,
   forwardEmail,
   favoriteEmail,
-  createDraftEmail,
 } = require("./gmailService.js");
 
-const { classifyEmail } = require("./openai.js");
+const { classifyEmail, createDraftEmail } = require("./openai.js");
 
 const taskQueue = new Bull("task-queue", {
   redis: {
