@@ -324,49 +324,83 @@ async function favoriteEmail(accessToken, messageId) {
   }
 }
 
-// async function createDraftEmail(accessToken, threadId, to, subject, messageDescription, messageId) {
-//   const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
+async function createDraft(accessToken, threadId, messageDescription, messageId, toEmail) {
+  const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
 
-//   const emailContent = [
-//     `To: ${to}`,
-//     `Subject: ${subject}`, // Add a subject line
-//     `In-Reply-To: <${messageId}>`, // The Message-ID of the original email you're replying to
-//     `References: <${messageId}>`, // Include original Message-ID for threading
-//     "",
-//     messageDescription,
-//   ].join("\r\n");
+  const emailContent = [
+    `To: ${toEmail}`, // Use the extracted recipient email address
+    // `Subject: Test Draft Email`,
+    `In-Reply-To: <${threadId}>`,
+    `References: <${messageId}>`,
+    "",
+    messageDescription,
+  ].join("\r\n");
 
-//   // Properly encode the message
-//   const encodedMessage = Buffer.from(emailContent)
-//     .toString("base64")
-//     .replace(/\+/g, "-")
-//     .replace(/\//g, "_")
-//     .replace(/=+$/, ""); // Make it URL-safe by replacing special characters
+  // Encode the email
+  const encodedMessage = Buffer.from(emailContent)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, ""); // Make it URL-safe by replacing special characters
 
-//   try {
-//     const response = await axios.post(
-//       draftEndpoint,
-//       {
-//         message: {
-//           raw: encodedMessage, // Pass the correctly encoded message
-//           threadId: threadId,
-//         },
-//       },
-//       {
-//         headers: {
-//           Authorization: `Bearer ${accessToken}`,
-//           "Content-Type": "application/json",
-//         },
-//       }
-//     );
-//     console.log(`Draft created with ID: ${response.data.id}`);
-//   } catch (error) {
-//     console.error(
-//       "Error creating draft email:",
-//       error.response ? error.response.data : error.message
-//     );
-//   }
-// }
+  try {
+    const response = await axios.post(
+      draftEndpoint,
+      {
+        message: {
+          raw: encodedMessage,
+          threadId: threadId,
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+    console.log(`Draft created with ID: ${response.data.id}`);
+  } catch (error) {
+    console.error(
+      "Error creating draft email:",
+      error.response ? error.response.data : error.message
+    );
+  }
+}
+
+async function getOriginalEmailDetails(accessToken, messageId) {
+  const emailEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`;
+
+  try {
+    const response = await axios.get(emailEndpoint, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+      },
+      params: {
+        format: "full", // Get the full message including headers
+      },
+    });
+
+    const headers = response.data.payload.headers;
+    const toHeader = headers.find(header => header.name === "To");
+    const fromHeader = headers.find(header => header.name === "From");
+
+    const toEmail = toHeader ? toHeader.value : null;
+    const fromEmail = fromHeader ? fromHeader.value : null;
+
+    console.log("To Email:", toEmail);
+    console.log("From Email:", fromEmail);
+
+    return  fromEmail;
+  } catch (error) {
+    console.error(
+      "Error fetching email details:",
+      error.response ? error.response.data : error.message
+    );
+    throw error; // Rethrow the error for further handling
+  }
+}
 
 
 async function archiveEmail(accessToken, messageId) {
@@ -598,6 +632,7 @@ module.exports = {
   createForwardingAddress,
   checkForwardingVerification,
   createFilter,
-  createDraftEmail,
+  createDraft,
   favoriteEmail,
+  getOriginalEmailDetails,
 };
