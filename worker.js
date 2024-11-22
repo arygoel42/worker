@@ -10,6 +10,8 @@ const {
   getMessageDetails,
   archiveEmail,
   forwardEmail,
+  favoriteEmail,
+  createDraftEmail,
 } = require("./gmailService.js");
 
 const { classifyEmail } = require("./openai.js");
@@ -79,7 +81,14 @@ taskQueue.process(async (job) => {
           console.log("Forwarding to:", action.config.forwardTo);
           await forwardEmail(accessToken, message.id, action.config.forwardTo);
         }
-        
+        else if (action.type === "favorite") {
+          console.log("favoriting email");
+          await favoriteEmail(accessToken, message.id);
+        } 
+        else if (action.type === "draft") {
+          console.log("drafting reply email") 
+          await createDraftEmail(accessToken, message.threadId, "recipient@example.com", "Test subject", "Temp Description", message.id);
+        }
       }
 
       // await applyLabelToEmail(accessToken, message.id, priorityLabelId);
