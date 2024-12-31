@@ -11,8 +11,8 @@ const {
   archiveEmail,
   forwardEmail,
   favoriteEmail,
-  getOriginalEmailDetails, 
-  createDraft
+  getOriginalEmailDetails,
+  createDraft,
 } = require("./gmailService.js");
 
 const { classifyEmail, createDraftEmail } = require("./openai.js");
@@ -20,7 +20,7 @@ const { classifyEmail, createDraftEmail } = require("./openai.js");
 const taskQueue = new Bull("task-queue", {
   redis: {
     host: process.env.HOST,
-    port: 18153,
+    port: 13420,
     password: process.env.REDISPASS,
   },
 });
@@ -56,7 +56,7 @@ taskQueue.process(async (job) => {
       const ruleKey = await classifyEmail(emailContent, rules);
       console.log("Rule key:", ruleKey);
 
-      if (ruleKey === 'Null') {
+      if (ruleKey === "Null") {
         console.error("email not valid to rule");
         continue;
       }
@@ -70,27 +70,38 @@ taskQueue.process(async (job) => {
 
         if (action.type === "label") {
           console.log("Applying label:", action.config.labelName);
-          const labelId = await getOrCreatePriorityLabel(accessToken, action.config.labelName);
+          const labelId = await getOrCreatePriorityLabel(
+            accessToken,
+            action.config.labelName
+          );
           await applyLabelToEmail(accessToken, message.id, labelId);
-        }
-        else if (action.type === "archive") {
+        } else if (action.type === "archive") {
           console.log("Archiving email");
           await archiveEmail(accessToken, message.id);
-        }
-        else if (action.type === "forward") {
+        } else if (action.type === "forward") {
           console.log("Forwarding email");
           console.log("Forwarding to:", action.config.forwardTo);
           await forwardEmail(accessToken, message.id, action.config.forwardTo);
-        }
-        else if (action.type === "favorite") {
+        } else if (action.type === "favorite") {
           console.log("favoriting email");
           await favoriteEmail(accessToken, message.id);
-        } 
-        else if (action.type === "draft") {
-          const fromEmail = await getOriginalEmailDetails(accessToken, message.id);
+        } else if (action.type === "draft") {
+          const fromEmail = await getOriginalEmailDetails(
+            accessToken,
+            message.id
+          );
           console.log("fromEmail:", fromEmail);
-          const reply = await createDraftEmail(emailContent, action.config.draftTemplate);
-          await createDraft(accessToken, message.threadId, reply, message.id, fromEmail);
+          const reply = await createDraftEmail(
+            emailContent,
+            action.config.draftTemplate
+          );
+          await createDraft(
+            accessToken,
+            message.threadId,
+            reply,
+            message.id,
+            fromEmail
+          );
         }
       }
 
@@ -117,8 +128,3 @@ taskQueue.on("completed", async (job) => {
   await job.remove(); // Explicitly remove the job after completion
   return;
 });
-
-
-
-
-      
