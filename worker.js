@@ -1,130 +1,179 @@
 const Bull = require("bull");
-// const admin = require("./api/firebase.js");
-require("dotenv").config();
+const express = require("express");
+const app = express();
+const cors = require("cors");
 const {
-  fetchEmailHistory,
-  getOrCreatePriorityLabel,
-  applyLabelToEmail,
-  fetchEmailHistoryWithRetry,
-  fetchEmailHistoryAndApplyLabel,
-  getMessageDetails,
-  archiveEmail,
-  forwardEmail,
-  favoriteEmail,
-  getOriginalEmailDetails,
-  createDraft,
-} = require("./gmailService.js");
+  saveEmailChunks,
+  retrieveFullEmail,
+  deleteEmails,
+} = require("./RAGService.js");
+const { fetchLast50Emails } = require("./gmailService.js");
+require("dotenv").config();
+const OpenAI = require("openai");
+const path = require("path");
+const dotenv = require("dotenv");
 
-const { classifyEmail, createDraftEmail } = require("./openai.js");
+app.use(cors());
+app.use(express.json());
 
 const taskQueue = new Bull("task-queue", {
   redis: {
     host: process.env.HOST,
-    port: 13420,
+    port: 15237,
     password: process.env.REDISPASS,
   },
 });
 
-console.log(
-  "Worker initialized" + process.env.HOST,
-  18153,
-  process.env.REDISPASS
-);
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
-taskQueue.process(async (job) => {
-  const { email, historyId, accessToken, rules } = job.data;
-  console.log("Worker running");
+console.log("Worker initialized", process.env.HOST, process.env.REDISPASS);
+
+// **Process jobs based on type**
+taskQueue.process("onboarding", async (job) => {
+  console.log("Processing onboarding task for new user...");
+
+  const { accessToken, userId } = job.data;
+  const progressKey = `progress:${userId}`; // Store user progress in Redis
 
   try {
-    const userMessages = await fetchEmailHistoryWithRetry(
-      accessToken,
-      historyId
-    );
+    let emails = await fetchLast50Emails(accessToken);
 
-    if (userMessages.length === 0) {
-      console.log("No new messages found after retries.");
-      return; // Exit if no new messages
+    for (let i = 0; i < emails.length; i++) {
+      let progress = Math.round(((i + 1) / emails.length) * 100); // Compute percentage
+      await saveEmailChunks(userId, emails[i].messageId, emails[i].content);
+
+      await job.progress(progress); // Bull's progress tracking
+      await taskQueue.client.set(progressKey, progress); // Store progress in Redis
     }
 
-    // const priorityLabelId = await getOrCreatePriorityLabel(accessToken);
-    for (const message of userMessages) {
-      console.log("Applying label to message:", message.id);
-      const emailContent = await getMessageDetails(accessToken, message.id);
-      console.log(emailContent);
-      //getclassfy function
-
-      const ruleKey = await classifyEmail(emailContent, rules);
-      console.log("Rule key:", ruleKey);
-
-      if (ruleKey === "Null") {
-        console.error("email not valid to rule");
-        continue;
-      }
-
-      const rule = rules[parseInt(ruleKey)];
-      console.log("Rule:", rule);
-
-      for (const action of JSON.parse(rule.type)) {
-        console.log("Action config:", action.config);
-        console.log("Action:", action);
-
-        if (action.type === "label") {
-          console.log("Applying label:", action.config.labelName);
-          const labelId = await getOrCreatePriorityLabel(
-            accessToken,
-            action.config.labelName
-          );
-          await applyLabelToEmail(accessToken, message.id, labelId);
-        } else if (action.type === "archive") {
-          console.log("Archiving email");
-          await archiveEmail(accessToken, message.id);
-        } else if (action.type === "forward") {
-          console.log("Forwarding email");
-          console.log("Forwarding to:", action.config.forwardTo);
-          await forwardEmail(accessToken, message.id, action.config.forwardTo);
-        } else if (action.type === "favorite") {
-          console.log("favoriting email");
-          await favoriteEmail(accessToken, message.id);
-        } else if (action.type === "draft") {
-          const fromEmail = await getOriginalEmailDetails(
-            accessToken,
-            message.id
-          );
-          console.log("fromEmail:", fromEmail);
-          const reply = await createDraftEmail(
-            emailContent,
-            action.config.draftTemplate
-          );
-          await createDraft(
-            accessToken,
-            message.threadId,
-            reply,
-            message.id,
-            fromEmail
-          );
-        }
-      }
-
-      // await applyLabelToEmail(accessToken, message.id, priorityLabelId);
-    }
-
-    console.log(`Processed task for email: ${email}, HistoryId: ${historyId}`);
+    console.log("✅ RAG onboarding complete for user:", userId);
+    await taskQueue.client.set(progressKey, 100); // Ensure it's marked as complete
   } catch (error) {
-    console.error("Error processing job:", error);
+    console.error("❌ Error processing onboarding task:", error.message);
+    await taskQueue.client.set(progressKey, -1); // Mark as failed (-1)
     throw error;
   }
 });
 
-taskQueue.on("failed", (job, err) => {
-  console.error(
-    `Job failed for email: ${job.data.email}, historyId: ${job.data.historyId}. Error: ${err.message}`
-  );
+taskQueue.process("embedding", async (job) => {
+  console.log("Processing existing user task...");
+
+  const { userId, emailId, emailContent } = job.data; // Existing user inputs
+  try {
+    saveEmailChunks(userId, emailId, emailContent);
+
+    console.log("RAG embedding complete for user", userId);
+  } catch (error) {}
 });
 
-taskQueue.on("completed", async (job) => {
-  console.log(
-    `Job completed for email: ${job.data.email}, historyId: ${job.data.historyId}`
-  );
-  await job.remove(); // Explicitly remove the job after completion
-  return;
+taskQueue.process("disableRAG", async (job) => {
+  const { userId } = job.data;
+
+  deleteEmails(userId);
+
+  console.log("deleting all emails from databse for user", userId);
 });
+
+// Handle failed jobs
+taskQueue.on("failed", (job, err) => {
+  console.error(`Job failed [${job.name}]:`, err.message);
+});
+
+// Remove completed jobs
+taskQueue.on("completed", async (job) => {
+  await job.remove();
+});
+
+app.get("/progress", async (req, res) => {
+  const { userId } = req.query;
+  if (!userId) {
+    return res.status(400).json({ error: "Missing userId parameter" });
+  }
+
+  const progressKey = `progress:${userId}`;
+  try {
+    const progress = await taskQueue.client.get(progressKey); // Get progress from Redis
+    res.json({ userId, progress: progress ? parseInt(progress) : 0 });
+  } catch (error) {
+    console.error("❌ Error fetching progress:", error);
+    res.status(500).json({ error: "Unable to fetch progress" });
+  }
+});
+app.post("/augmentedEmailSearch", async (req, res) => {
+  const { userId, query } = req.body;
+
+  if (!userId || !query) {
+    return res.status(400).json({ error: "Missing userId or query" });
+  }
+
+  // Retrieve the full email based on the query
+  const fullEmails = await retrieveFullEmail(userId, query);
+
+  if (!fullEmails || fullEmails.length === 0) {
+    return res.status(404).json({ error: "No relevant emails found." });
+  }
+
+  const currentDate = new Date().toISOString().split("T")[0]; // Get today's date in YYYY-MM-DD format
+
+  const prompt = `
+  You are an AI assistant that helps users retrieve relevant information from their emails. 
+  Your responses should be **concise, relevant, and strictly based on the provided email context.** 
+
+  **Date Understanding:**
+  - **Today's date is: ${currentDate}**.  
+  - If an email references a relative time (e.g., "tomorrow," "next week," or "yesterday"), interpret it based on the email's **sent date** rather than today's date.  
+  - Convert relative date references into absolute dates when answering user questions.  
+
+  **Relevant Emails Based on the Search Query:**  
+
+  ${fullEmails
+    .map((email) => `Date: ${email.date}\nContent: ${email.content}`)
+    .join("\n\n")}
+
+  **User's Query:** "${query}"  
+
+  **Instructions:**  
+  - Use the email dates to correctly interpret relative time references.  
+  - If the answer is unclear, state that the emails do not contain enough information.  
+  - Do **not** make up details that are not explicitly mentioned in the emails.  
+
+  Based **only** on the given emails and the provided context, answer the question as accurately as possible.
+`;
+
+  console.log("Prompt:", prompt);
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an assistant that provides the user with details regarding their emails.",
+        },
+        { role: "user", content: prompt },
+      ],
+    });
+    console.log(
+      "Semantic Search Completion:",
+      completion.choices[0].message.content
+    );
+    res.status(200).json({ completion: completion.choices[0].message.content });
+  } catch (error) {
+    console.error("Error in semantic search:", error);
+    res
+      .status(500)
+      .json({ error: "An error occurred while processing your request." });
+  }
+});
+
+// Start Server
+app.listen(3023, () => {
+  console.log("Worker listening on port 3023");
+});
+
+//connect button and have it start and stop RAG, then work on querying via the frontend, then add progress bar.
+
+//Not sure what happens if the user clicks enable and disable really fast so we may have to add a cooldown of at least 15 minutes.

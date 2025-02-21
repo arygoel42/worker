@@ -300,7 +300,7 @@ async function getOrCreatePriorityLabel(accessToken, name) {
 async function favoriteEmail(accessToken, messageId) {
   const messageEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`;
 
-  // Not sure if it would work, but after some research, The only way to favourite an email is by labeing it as STARRED  
+  // Not sure if it would work, but after some research, The only way to favourite an email is by labeing it as STARRED
   // labeling an email as STARRED is how gmail knows that it is a favourited email
   try {
     await axios.post(
@@ -327,7 +327,7 @@ async function favoriteEmail(accessToken, messageId) {
 // async function createDraft(accessToken, threadId, messageDescription, messageId, toEmail) {
 //   const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
 
-//   console.log("toEmail:", toEmail); 
+//   console.log("toEmail:", toEmail);
 
 //   const emailContent = [
 //     `To: ${toEmail}`, // Use the extracted recipient email address
@@ -370,7 +370,13 @@ async function favoriteEmail(accessToken, messageId) {
 //   }
 // }
 
-async function createDraft(accessToken, threadId, messageDescription, messageId, toEmail) {
+async function createDraft(
+  accessToken,
+  threadId,
+  messageDescription,
+  messageId,
+  toEmail
+) {
   const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
 
   // Create proper email MIME message
@@ -383,8 +389,8 @@ async function createDraft(accessToken, threadId, messageDescription, messageId,
     `In-Reply-To: ${messageId}`,
     `References: ${messageId}`,
     `Thread-Id: ${threadId}`,
-    "",  // Empty line separates headers from body
-    messageDescription
+    "", // Empty line separates headers from body
+    messageDescription,
   ].join("\r\n");
 
   // Encode the email
@@ -421,7 +427,6 @@ async function createDraft(accessToken, threadId, messageDescription, messageId,
   }
 }
 
-
 async function getOriginalEmailDetails(accessToken, messageId) {
   const emailEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`;
 
@@ -437,8 +442,8 @@ async function getOriginalEmailDetails(accessToken, messageId) {
     });
 
     const headers = response.data.payload.headers;
-    const toHeader = headers.find(header => header.name === "To");
-    const fromHeader = headers.find(header => header.name === "From");
+    const toHeader = headers.find((header) => header.name === "To");
+    const fromHeader = headers.find((header) => header.name === "From");
 
     const toEmail = toHeader ? toHeader.value : null;
     const fromEmail = fromHeader ? fromHeader.value : null;
@@ -456,14 +461,11 @@ async function getOriginalEmailDetails(accessToken, messageId) {
       console.log("No email found in From header:", fromEmail);
       matchEmail = fromEmail;
       return matchEmail;
-    }
-    else {
+    } else {
       matchEmail = match[1];
       console.log("Email found:", matchEmail);
       return matchEmail;
     }
-
-
   } catch (error) {
     console.error(
       "Error fetching email details:",
@@ -472,7 +474,6 @@ async function getOriginalEmailDetails(accessToken, messageId) {
     throw error; // Rethrow the error for further handling
   }
 }
-
 
 async function archiveEmail(accessToken, messageId) {
   const archiveEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`;
@@ -507,16 +508,18 @@ async function forwardEmail(accessToken, messageId, forwardToEmail) {
     const response = await axios.get(emailContentEndpoint, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/json',
+        Accept: "application/json",
       },
       params: {
-        format: 'raw',
+        format: "raw",
       },
     });
 
     const rawEmailData = response.data.raw;
 
-    const originalEmailBase64 = rawEmailData.replace(/-/g, '+').replace(/_/g, '/');
+    const originalEmailBase64 = rawEmailData
+      .replace(/-/g, "+")
+      .replace(/_/g, "/");
 
     const forwardingMessage = createForwardingMessage(
       forwardToEmail,
@@ -524,10 +527,10 @@ async function forwardEmail(accessToken, messageId, forwardToEmail) {
     );
 
     const encodedMessage = Buffer.from(forwardingMessage)
-      .toString('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=+$/, '');
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
 
     await axios.post(
       sendEmailEndpoint,
@@ -535,12 +538,14 @@ async function forwardEmail(accessToken, messageId, forwardToEmail) {
       {
         headers: {
           Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
       }
     );
 
-    console.log(`Email ${messageId} forwarded to ${forwardToEmail} successfully.`);
+    console.log(
+      `Email ${messageId} forwarded to ${forwardToEmail} successfully.`
+    );
   } catch (error) {
     console.error(
       `Error forwarding email ID ${messageId}:`,
@@ -550,32 +555,36 @@ async function forwardEmail(accessToken, messageId, forwardToEmail) {
 }
 
 function createForwardingMessage(forwardToEmail, originalEmailBase64) {
-  const originalEmail = Buffer.from(originalEmailBase64, 'base64').toString('utf-8');
+  const originalEmail = Buffer.from(originalEmailBase64, "base64").toString(
+    "utf-8"
+  );
 
   const subjectMatch = originalEmail.match(/^Subject: (.*)$/m);
-  const originalSubject = subjectMatch ? subjectMatch[1] : 'No Subject';
-  const subject = originalSubject.startsWith('Fwd:') ? originalSubject : `Fwd: ${originalSubject}`;
+  const originalSubject = subjectMatch ? subjectMatch[1] : "No Subject";
+  const subject = originalSubject.startsWith("Fwd:")
+    ? originalSubject
+    : `Fwd: ${originalSubject}`;
 
   const dateMatch = originalEmail.match(/^Date: (.*)$/m);
-  const originalDate = dateMatch ? dateMatch[1] : 'Unknown Date';
+  const originalDate = dateMatch ? dateMatch[1] : "Unknown Date";
 
   const fromMatch = originalEmail.match(/^From: (.*)$/m);
-  const originalFrom = fromMatch ? fromMatch[1] : 'Unknown Sender';
+  const originalFrom = fromMatch ? fromMatch[1] : "Unknown Sender";
 
   const toMatch = originalEmail.match(/^To: (.*)$/m);
-  const originalTo = toMatch ? toMatch[1] : 'Unknown Receiver';
+  const originalTo = toMatch ? toMatch[1] : "Unknown Receiver";
 
   const forwardedHeader = [
-    '---------- Forwarded message ---------',
+    "---------- Forwarded message ---------",
     `From: ${originalFrom}`,
     `Date: ${convertToEST(originalDate)}`,
     `Subject: ${originalSubject}`,
     `To: ${originalTo}`,
-    '',
-  ].join('\n');
+    "",
+  ].join("\n");
   console.log(forwardedHeader);
 
-  const boundary = '----=_Part_0_123456789.987654321';
+  const boundary = "----=_Part_0_123456789.987654321";
 
   const forwardingMessage = [
     `From: me`,
@@ -583,19 +592,19 @@ function createForwardingMessage(forwardToEmail, originalEmailBase64) {
     `Subject: ${subject}`,
     `MIME-Version: 1.0`,
     `Content-Type: multipart/mixed; boundary="${boundary}"`,
-    '',
+    "",
     `--${boundary}`,
     `Content-Type: text/plain; charset=utf-8`,
-    '',
+    "",
     forwardedHeader,
-    '',
+    "",
     `--${boundary}`,
     `Content-Type: message/rfc822`,
-    '',
+    "",
     originalEmail,
-    '',
+    "",
     `--${boundary}--`,
-  ].join('\n');
+  ].join("\n");
 
   return forwardingMessage;
 }
@@ -603,28 +612,30 @@ function createForwardingMessage(forwardToEmail, originalEmailBase64) {
 function convertToEST(dateString) {
   const originalDate = new Date(dateString);
 
-  const estDate = new Date(originalDate.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const estDate = new Date(
+    originalDate.toLocaleString("en-US", { timeZone: "America/New_York" })
+  );
 
   const options = {
-    weekday: 'short',
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
     hour12: true,
-    timeZone: 'America/New_York',
+    timeZone: "America/New_York",
   };
 
-  const formattedDate = estDate.toLocaleString('en-US', options);
+  const formattedDate = estDate.toLocaleString("en-US", options);
 
-  return formattedDate.replace(/GMT[-+]\d{1,2}/, 'EST');
+  return formattedDate.replace(/GMT[-+]\d{1,2}/, "EST");
 }
 
 async function createForwardingAddress(accessToken, forwardingEmail) {
   const forwardingAddressEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/settings/forwardingAddresses`;
-  
+
   try {
     const response = await axios.post(
       forwardingAddressEndpoint,
@@ -632,12 +643,14 @@ async function createForwardingAddress(accessToken, forwardingEmail) {
       {
         headers: {
           Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
       }
     );
 
-    console.log(`Forwarding address ${forwardingEmail} created. Check your inbox to verify it if necessary.`);
+    console.log(
+      `Forwarding address ${forwardingEmail} created. Check your inbox to verify it if necessary.`
+    );
   } catch (error) {
     console.error(
       `Error creating forwarding address:`,
@@ -649,7 +662,7 @@ async function createForwardingAddress(accessToken, forwardingEmail) {
 
 async function checkForwardingVerification(accessToken, forwardingEmail) {
   const listEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/settings/forwardingAddresses`;
-  
+
   const response = await axios.get(listEndpoint, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -658,7 +671,9 @@ async function checkForwardingVerification(accessToken, forwardingEmail) {
 
   const forwardingAddresses = response.data.forwardingAddresses || [];
   return forwardingAddresses.some(
-    (address) => address.forwardingEmail === forwardingEmail && address.verificationStatus === 'accepted'
+    (address) =>
+      address.forwardingEmail === forwardingEmail &&
+      address.verificationStatus === "accepted"
   );
 }
 
@@ -675,17 +690,60 @@ async function createFilter(accessToken, forwardingEmail, criteria) {
       {
         headers: {
           Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
       }
     );
 
-    console.log(`Filter created successfully for forwarding to ${forwardingEmail}.`);
+    console.log(
+      `Filter created successfully for forwarding to ${forwardingEmail}.`
+    );
   } catch (error) {
     console.error(
       `Error creating filter for forwarding:`,
       error.response ? error.response.data : error.message
     );
+  }
+}
+
+async function fetchLast50Emails(accessToken) {
+  const oauth2Client = new google.auth.OAuth2();
+  oauth2Client.setCredentials({ access_token: accessToken });
+
+  const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+
+  try {
+    const response = await gmail.users.messages.list({
+      userId: "me",
+      maxResults: 300,
+    });
+
+    if (!response.data.messages) {
+      console.log("No emails found.");
+      return [];
+    }
+
+    // Fetch full details for each message and include the message ID
+    const emailDetails = [];
+    for (let i = 0; i < response.data.messages.length; i++) {
+      const message = response.data.messages[i];
+
+      // Fetch email content using the message ID
+      const emailContent = await getMessageDetails(accessToken, message.id);
+
+      // Add a rate-limiting delay (e.g., 500ms between requests)
+      await delay(500); // Adjust the delay based on your needs
+
+      // Push the result into the array
+      emailDetails.push({
+        messageId: message.id,
+        content: emailContent,
+      });
+    }
+
+    return emailDetails;
+  } catch (error) {
+    console.error("Error fetching emails:", error);
   }
 }
 
@@ -706,4 +764,5 @@ module.exports = {
   createDraft,
   favoriteEmail,
   getOriginalEmailDetails,
+  fetchLast50Emails,
 };
