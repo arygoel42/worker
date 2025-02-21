@@ -19,6 +19,7 @@
     "express": "^4.21.2",
     "google-auth-library": "^9.14.2",
     "googleapis": "^144.0.0",
+    "html-to-text": "^9.0.5",
     "natural": "^8.0.1",
     "nodemon": "^3.1.7",
     "openai": "^4.71.1",

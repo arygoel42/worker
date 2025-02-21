@@ -33,30 +33,81 @@ console.log("Worker initialized", process.env.HOST, process.env.REDISPASS);
 // **Process jobs based on type**
 taskQueue.process("onboarding", async (job) => {
   console.log("Processing onboarding task for new user...");
-
   const { accessToken, userId } = job.data;
-  const progressKey = `progress:${userId}`; // Store user progress in Redis
+  const progressKey = `progress:${userId}`;
 
   try {
-    let emails = await fetchLast50Emails(accessToken);
+    // Initialize progress
+    await taskQueue.client.set(
+      progressKey,
+      JSON.stringify({
+        phase: "initializing",
+        fetch: 0,
+        save: 0,
+        total: 0,
+      })
+    );
 
-    for (let i = 0; i < emails.length; i++) {
-      let progress = Math.round(((i + 1) / emails.length) * 100); // Compute percentage
+    // Phase 1: Fetch emails
+    let emails = [];
+    const emailFetchProgress = async (current, total) => {
+      const progress = Math.round((current / total) * 50); // 50% weight for fetching
+      await taskQueue.client.set(
+        progressKey,
+        JSON.stringify({
+          phase: "fetching",
+          fetch: progress,
+          save: 0,
+          total: progress,
+        })
+      );
+    };
+
+    // Modified fetch function with progress reporting
+    emails = await fetchLast50Emails(accessToken, emailFetchProgress);
+
+    // Phase 2: Save to Pinecone
+    const totalEmails = emails.length;
+    for (let i = 0; i < totalEmails; i++) {
       await saveEmailChunks(userId, emails[i].messageId, emails[i].content);
 
-      await job.progress(progress); // Bull's progress tracking
-      await taskQueue.client.set(progressKey, progress); // Store progress in Redis
+      const saveProgress = Math.round(((i + 1) / totalEmails) * 50); // 50% weight for saving
+      const total = 50 + saveProgress; // 50% from fetch + current save progress
+
+      await taskQueue.client.set(
+        progressKey,
+        JSON.stringify({
+          phase: "saving",
+          fetch: 50, // Fetching complete
+          save: saveProgress,
+          total: total,
+        })
+      );
     }
 
-    console.log("✅ RAG onboarding complete for user:", userId);
-    await taskQueue.client.set(progressKey, 100); // Ensure it's marked as complete
+    // Mark complete
+    await taskQueue.client.set(
+      progressKey,
+      JSON.stringify({
+        phase: "complete",
+        fetch: 50,
+        save: 50,
+        total: 100,
+      })
+    );
   } catch (error) {
-    console.error("❌ Error processing onboarding task:", error.message);
-    await taskQueue.client.set(progressKey, -1); // Mark as failed (-1)
+    await taskQueue.client.set(
+      progressKey,
+      JSON.stringify({
+        phase: "error",
+        fetch: 0,
+        save: 0,
+        total: -1,
+      })
+    );
     throw error;
   }
 });
-
 taskQueue.process("embedding", async (job) => {
   console.log("Processing existing user task...");
 
@@ -88,19 +139,27 @@ taskQueue.on("completed", async (job) => {
 
 app.get("/progress", async (req, res) => {
   const { userId } = req.query;
-  if (!userId) {
-    return res.status(400).json({ error: "Missing userId parameter" });
-  }
-
   const progressKey = `progress:${userId}`;
+
   try {
-    const progress = await taskQueue.client.get(progressKey); // Get progress from Redis
-    res.json({ userId, progress: progress ? parseInt(progress) : 0 });
+    const progressData = await taskQueue.client.get(progressKey);
+    const defaultProgress = {
+      phase: "waiting",
+      fetch: 0,
+      save: 0,
+      total: 0,
+    };
+
+    res.json(progressData ? JSON.parse(progressData) : defaultProgress);
   } catch (error) {
-    console.error("❌ Error fetching progress:", error);
-    res.status(500).json({ error: "Unable to fetch progress" });
+    res.status(500).json({ ...defaultProgress, phase: "error" });
   }
 });
+
+app.get("/", (req, res) => {
+  res.send("Worker is running");
+});
+
 app.post("/augmentedEmailSearch", async (req, res) => {
   const { userId, query } = req.body;
 
@@ -169,9 +228,43 @@ app.post("/augmentedEmailSearch", async (req, res) => {
   }
 });
 
+//__________________________
+
+//__________________________
+
 // Start Server
 app.listen(3023, () => {
   console.log("Worker listening on port 3023");
+});
+
+const shutdown = async () => {
+  console.log("Shutting down worker...");
+
+  try {
+    // Pause processing new jobs
+    await taskQueue.pause();
+
+    // Remove all waiting and delayed jobs
+    await taskQueue.empty();
+    console.log("All queued tasks have been removed.");
+
+    // Close Redis connection
+    await taskQueue.close();
+    console.log("Redis connection closed.");
+
+    process.exit(0); // Exit gracefully
+  } catch (error) {
+    console.error("Error during shutdown:", error);
+    process.exit(1); // Exit with failure code
+  }
+};
+
+// Handle process termination signals
+process.on("SIGINT", shutdown); // Ctrl + C
+process.on("SIGTERM", shutdown); // Docker stop / Heroku shutdown
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err);
+  shutdown();
 });
 
 //connect button and have it start and stop RAG, then work on querying via the frontend, then add progress bar.

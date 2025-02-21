@@ -20,7 +20,8 @@ const index = pc.index(indexName);
 const limit = pLimit(5);
 
 function chunkEmail(emailText, chunkSize = 512, overlap = 100) {
-  if (emailText.length == undefined) {
+  if (!emailText || typeof emailText !== "string") {
+    console.error("Error: emailText is undefined or not a string.");
     return [];
   }
   const sentenceTokenizer = new natural.SentenceTokenizer();
@@ -264,58 +265,57 @@ async function retrieveFullEmail(
 
 async function deleteEmails(userId) {
   try {
+    console.log(`Deleting all emails for user ${userId}...`);
     let emailIds = new Set();
-    let cursor = null;
 
     // Step 1: Find all email IDs belonging to the user
-    do {
-      const queryResults = await index.query({
-        filter: { user_id: userId },
-        topK: 10000, // Adjust batch size as needed
-        includeMetadata: true, // Ensure metadata contains the email ID
-        after: cursor, // Handle pagination if needed
-      });
+    const queryResults = await index.query({
+      vector: Array(1536).fill(0),
+      filter: { user_id: userId },
+      topK: 10000,
+      includeMetadata: true,
+    });
 
-      // Extract unique email IDs
-      queryResults.matches.forEach((match) => {
-        if (match.metadata?.email_id) {
-          emailIds.add(match.metadata.email_id);
-        }
-      });
-
-      cursor = queryResults.next_cursor || null;
-    } while (cursor);
+    // Extract unique email IDs
+    queryResults.matches.forEach((match) => {
+      if (match.metadata?.email_id) {
+        emailIds.add(match.metadata.email_id);
+      }
+    });
 
     if (emailIds.size === 0) {
       console.log(`No emails found for user ${userId}.`);
       return;
     }
 
-    // Step 2: Find all chunks related to these email IDs and delete them
-    let chunkIdsToDelete = [];
-    cursor = null;
+    // Step 2: Find and delete chunks related to these email IDs
+    for (const emailId of emailIds) {
+      console.log(`Querying Pinecone for email_id: ${emailId}`);
 
-    do {
       const chunkResults = await index.query({
-        filter: { email_id: { $in: Array.from(emailIds) } }, // Get all chunks for those email IDs
-        topK: 1000,
-        includeMetadata: false,
-        after: cursor,
+        vector: Array(1536).fill(0),
+        filter: { email_id: { $eq: emailId } }, // Ensure correct filter format
+        topK: 10000,
       });
 
-      // Collect chunk IDs
-      chunkIdsToDelete.push(...chunkResults.matches.map((match) => match.id));
+      console.log("Query results:", JSON.stringify(chunkResults, null, 2));
 
-      cursor = chunkResults.next_cursor || null;
-    } while (cursor);
+      const chunkIdsToDelete = chunkResults.matches.map((match) => match.id);
+      console.log("Chunk IDs to delete:", chunkIdsToDelete);
 
-    if (chunkIdsToDelete.length > 0) {
+      if (!chunkIdsToDelete || chunkIdsToDelete.length === 0) {
+        console.log(
+          `No chunk IDs found for deletion. Skipping delete for email_id: ${emailId}`
+        );
+        continue;
+      }
+
+      // ✅ Use deleteMany() instead of delete()
       await index.deleteMany(chunkIdsToDelete);
       console.log(
-        `Deleted ${chunkIdsToDelete.length} chunks for user ${userId}`
+        `Deleted ${chunkIdsToDelete.length} chunks for email_id: ${emailId}`
       );
-    } else {
-      console.log(`No chunks found for deletion.`);
+      delay(200);
     }
   } catch (error) {
     console.error("Error deleting emails:", error);

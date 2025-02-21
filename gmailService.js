@@ -2,6 +2,42 @@ const axios = require("axios");
 const https = require("https");
 
 const agent = new https.Agent({ rejectUnauthorized: false });
+const { google } = require("googleapis");
+const { htmlToText } = require("html-to-text");
+
+function combineMetadataAndContent(emailData) {
+  if (!emailData || !emailData.metadata || !emailData.content) {
+    return "";
+  }
+
+  const { metadata, content } = emailData;
+  const { headers, labels } = metadata;
+
+  const relevantHeaders = ["Subject", "From", "To", "Cc", "Date"];
+
+  const formattedHeaders = relevantHeaders
+    .map((header) => {
+      return headers[header] ? `${header}: ${headers[header]}` : "";
+    })
+    .filter((line) => line !== "")
+    .join("\n");
+
+  const labelsString = labels ? `Labels: ${labels}` : "";
+
+  let combinedString = "";
+
+  if (labelsString) {
+    combinedString += `${labelsString}\n`;
+  }
+
+  if (formattedHeaders) {
+    combinedString += `${formattedHeaders}\n\n`;
+  }
+
+  combinedString += `${content}`;
+
+  return combinedString.trim();
+}
 
 // not currently using this
 async function accessGmailApi(accessToken) {
@@ -35,7 +71,7 @@ async function accessGmailApi(accessToken) {
 }
 
 async function getMessageDetails(accessToken, messageId) {
-  const messageEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`;
+  const messageEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=full`;
 
   try {
     const response = await axios.get(messageEndpoint, {
@@ -47,7 +83,7 @@ async function getMessageDetails(accessToken, messageId) {
     });
 
     // Log the entire message to see its structure
-    console.log("Message Details:", response.data);
+    // console.log("Message Details:", response.data.id, response.data.snippet);
 
     // Extract the payload
     const payload = response.data.payload;
@@ -56,23 +92,43 @@ async function getMessageDetails(accessToken, messageId) {
     const getEmailContent = (payload) => {
       // Check if this is a simple message with body data (text or HTML)
       if (payload.body && payload.body.data) {
-        const encodedContent = payload.body.data;
-        const decodedContent = Buffer.from(encodedContent, "base64").toString(
-          "utf-8"
-        );
-        return decodedContent;
+        if (payload.mimeType === "text/plain") {
+          const encodedContent = payload.body.data;
+          const decodedContent = Buffer.from(encodedContent, "base64").toString(
+            "utf-8"
+          );
+          return decodedContent;
+        } else if (payload.mimeType === "text/html") {
+          const encodedHtml = payload.body.data;
+          const decodedHtml = Buffer.from(encodedHtml, "base64").toString(
+            "utf-8"
+          );
+          const plainText = htmlToText(decodedHtml, { wordwrap: false });
+          return plainText;
+        }
       }
 
       // Otherwise, look through the parts for text or HTML content
       if (payload.parts) {
         for (let part of payload.parts) {
-          if (part.mimeType === "text/plain" || part.mimeType === "text/html") {
+          if (part.mimeType === "text/plain" && part.body && part.body.data) {
             const encodedContent = part.body.data;
             const decodedContent = Buffer.from(
               encodedContent,
               "base64"
             ).toString("utf-8");
             return decodedContent;
+          } else if (
+            part.mimeType === "text/html" &&
+            part.body &&
+            part.body.data
+          ) {
+            const encodedHtml = part.body.data;
+            const decodedHtml = Buffer.from(encodedHtml, "base64").toString(
+              "utf-8"
+            );
+            const plainText = htmlToText(decodedHtml, { wordwrap: false });
+            return plainText;
           }
         }
       }
@@ -80,10 +136,62 @@ async function getMessageDetails(accessToken, messageId) {
       return "No email content found";
     };
 
+    const simplifyURL = (text) => {
+      const urlRegex = /(https?:\/\/[^\s\[\]]+)/g;
+
+      return text.replace(urlRegex, (url) => {
+        try {
+          const parsedUrl = new URL(url);
+          const hostname = parsedUrl.hostname;
+          return `[URL: ${parsedUrl.protocol}//${hostname}]`;
+        } catch (error) {
+          return url;
+        }
+      });
+    };
+
+    const getEmailMetadata = (response) => {
+      if (!response.data.payload) {
+        console.warn("Response payload is missing.");
+        return {
+          labels: "",
+          headers: {},
+        };
+      }
+
+      const labelIds = response.data.labelIds || [];
+      const headers = response.data.payload.headers || [];
+
+      const formattedHeaders = headers.reduce((acc, header) => {
+        acc[header.name] = header.value;
+        return acc;
+      }, {});
+
+      return {
+        labels: labelIds.join(", "),
+        headers: formattedHeaders,
+      };
+    };
+
     // Get the email content from the payload
-    const emailContent = getEmailContent(payload);
-    console.log("Email Content:", emailContent);
-    return emailContent;
+    const emailContent = simplifyURL(getEmailContent(payload));
+
+    const emailMetaData = getEmailMetadata(response);
+
+    const MAX_CONTENT_LENGTH = 1000; // change as needed
+    let finalContent = emailContent;
+    if (emailContent.length > MAX_CONTENT_LENGTH) {
+      finalContent = emailContent.substring(0, MAX_CONTENT_LENGTH) + "...";
+    }
+    const emailData = {
+      metadata: emailMetaData,
+      content: finalContent,
+    };
+    finalContent = combineMetadataAndContent(emailData);
+
+    console.log("Email Content:", finalContent);
+
+    return finalContent;
   } catch (error) {
     console.error(
       `Error fetching details for message ID ${messageId}:`,
@@ -91,7 +199,6 @@ async function getMessageDetails(accessToken, messageId) {
     );
   }
 }
-
 // Function to fetch email history and return new messages
 async function fetchEmailHistory(accessToken, historyId) {
   const gmailEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/history`;
@@ -705,8 +812,11 @@ async function createFilter(accessToken, forwardingEmail, criteria) {
     );
   }
 }
+const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
-async function fetchLast50Emails(accessToken) {
+let Gmailprogress = 0;
+let totalEmails = 300;
+async function fetchLast50Emails(accessToken, progressCallback) {
   const oauth2Client = new google.auth.OAuth2();
   oauth2Client.setCredentials({ access_token: accessToken });
 
@@ -715,7 +825,7 @@ async function fetchLast50Emails(accessToken) {
   try {
     const response = await gmail.users.messages.list({
       userId: "me",
-      maxResults: 300,
+      maxResults: totalEmails,
     });
 
     if (!response.data.messages) {
@@ -728,6 +838,9 @@ async function fetchLast50Emails(accessToken) {
     for (let i = 0; i < response.data.messages.length; i++) {
       const message = response.data.messages[i];
 
+      if (progressCallback) {
+        await progressCallback(i + 1, totalEmails);
+      }
       // Fetch email content using the message ID
       const emailContent = await getMessageDetails(accessToken, message.id);
 
@@ -747,6 +860,14 @@ async function fetchLast50Emails(accessToken) {
   }
 }
 
+const fetchProgress = async () => {
+  return Gmailprogress;
+};
+
+const resetProgress = () => {
+  Gmailprogress = 0;
+};
+
 module.exports = {
   accessGmailApi,
   getMessageDetails,
@@ -765,4 +886,6 @@ module.exports = {
   favoriteEmail,
   getOriginalEmailDetails,
   fetchLast50Emails,
+  fetchProgress,
+  resetProgress,
 };
