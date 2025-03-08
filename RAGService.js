@@ -2,7 +2,6 @@ const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 const { Pinecone } = require("@pinecone-database/pinecone");
-const pLimit = require("p-limit").default;
 require("dotenv").config();
 const { upsertRateLimiter } = require("./RateLimiter");
 const natural = require("natural");
@@ -19,7 +18,6 @@ const pc = new Pinecone({
 const indexName = "quickstart";
 
 const index = pc.index(indexName);
-const limit = pLimit(5);
 
 function chunkEmail(emailText, chunkSize = 512, overlap = 50) {
   // Validate input
