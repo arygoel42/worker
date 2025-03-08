@@ -2,9 +2,11 @@ const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
 const { Pinecone } = require("@pinecone-database/pinecone");
-const natural = require("natural");
 const pLimit = require("p-limit").default;
 require("dotenv").config();
+const { upsertRateLimiter } = require("./RateLimiter");
+const natural = require("natural");
+const { removeStopwords } = require("stopword");
 
 const app = express();
 
@@ -19,54 +21,114 @@ const indexName = "quickstart";
 const index = pc.index(indexName);
 const limit = pLimit(5);
 
-function chunkEmail(emailText, chunkSize = 512, overlap = 100) {
+function chunkEmail(emailText, chunkSize = 512, overlap = 50) {
+  // Validate input
   if (!emailText || typeof emailText !== "string") {
     console.error("Error: emailText is undefined or not a string.");
     return [];
   }
-  const sentenceTokenizer = new natural.SentenceTokenizer();
 
-  let paragraphs = emailText.split(/\n\s*\n/); // Split by paragraph (double newlines)
+  // Preprocess to remove fluff
+  emailText = removeFluff(emailText);
+
+  // Initialize tokenizer and variables
+  const sentenceTokenizer = new natural.SentenceTokenizer();
+  let paragraphs = emailText.split(/\n\s*\n/); // Split by double newlines
   let chunks = [];
   let currentChunk = [];
   let currentLength = 0;
 
+  // Process each paragraph
   for (let paragraph of paragraphs) {
     let sentences = sentenceTokenizer.tokenize(paragraph);
     let paragraphLength = paragraph.split(" ").length;
 
     if (paragraphLength <= chunkSize) {
-      // If paragraph fits, store it as a chunk
-      chunks.push(paragraph);
+      // If paragraph fits and isn’t fluff, store it
+      let filteredParagraph = filterSentences(paragraph);
+      if (filteredParagraph) chunks.push(filteredParagraph);
       continue;
     }
 
-    // If paragraph is too long, split it into sentence-based chunks
+    // Split large paragraphs into sentence-based chunks
     for (let sentence of sentences) {
-      let sentenceLength = sentence.split(" ").length;
+      let filteredSentence = filterSentences(sentence);
+      if (!filteredSentence) continue; // Skip irrelevant sentences
+
+      let sentenceLength = filteredSentence.split(" ").length;
 
       if (currentLength + sentenceLength > chunkSize) {
-        chunks.push(currentChunk.join(" ")); // Store chunk
-        currentChunk = currentChunk.slice(-(overlap / 10)); // Keep overlap
-        currentLength = currentChunk.reduce(
-          (sum, s) => sum + s.split(" ").length,
-          0
-        );
+        if (currentChunk.length > 0) {
+          chunks.push(currentChunk.join(" "));
+          // Overlap: keep the last few sentences
+          currentChunk = currentChunk.slice(-Math.ceil(overlap / 10));
+          currentLength = currentChunk.reduce(
+            (sum, s) => sum + s.split(" ").length,
+            0
+          );
+        }
       }
 
-      currentChunk.push(sentence);
+      currentChunk.push(filteredSentence);
       currentLength += sentenceLength;
     }
 
     if (currentChunk.length > 0) {
-      chunks.push(currentChunk.join(" ")); // Add final chunk
+      chunks.push(currentChunk.join(" "));
       currentChunk = [];
       currentLength = 0;
     }
   }
-  console.log("Chunks count:", chunks.length);
 
+  console.log("Chunks count:", chunks.length);
   return chunks;
+}
+
+// Remove greetings, farewells, signatures, etc.
+function removeFluff(emailText) {
+  // Remove greetings
+  emailText = emailText.replace(
+    /^[\s]*(Hi|Hello|Dear|Good morning|Good afternoon)[^\n]*,\n?/i,
+    ""
+  );
+
+  // Remove farewells
+  // emailText = emailText.replace(
+  //   /\n(Best regards|Sincerely|Thanks|Thank you|Cheers|Warm regards)[^\n]*$/i,
+  //   ""
+  // );
+
+  // Remove signatures (heuristic: last 5 lines)
+  const lines = emailText.split("\n");
+  if (lines.length > 5) {
+    emailText = lines.slice(0, -5).join("\n");
+  }
+
+  // Remove quoted replies
+  emailText = emailText.replace(/^\s*>.*$/gm, "");
+
+  // Remove boilerplate
+  emailText = emailText.replace(/This email is confidential.*$/i, "");
+
+  return emailText.trim();
+}
+
+// Filter out short or fluff sentences
+function filterSentences(sentence) {
+  const minLength = 5; // Minimum word count
+  if (sentence.split(" ").length < minLength) return null;
+
+  // Skip common fluff phrases
+  const fluffPhrases = [
+    "please let me know",
+    "feel free to reach out",
+    "looking forward to hearing from you",
+  ];
+  if (fluffPhrases.some((phrase) => sentence.toLowerCase().includes(phrase)))
+    return null;
+
+  // Remove stopwords for cleaner content
+  return removeStopwords(sentence.split(" ")).join(" ");
 }
 
 const getEmbedding = async (text) => {
@@ -95,17 +157,39 @@ const getRateLimitedEmbedding = (text) => {
   return limit(() => getEmbedding(text)); // Enqueue request to be rate-limited
 };
 
+let lastCall = 0;
+const DELAY_MS = 100; // 100ms delay (10 calls/second)
+
+// Shared variable to track the last query time
+let lastQueryTime = 0;
+const MIN_DELAY = 1000; // 1 second in milliseconds
+
+// Helper function to enforce a 1-second delay before querying Pinecone
+async function delayedQuery(queryParams) {
+  const now = Date.now();
+  const timeSinceLast = now - lastQueryTime;
+  if (timeSinceLast < MIN_DELAY) {
+    // Wait for the remaining time to ensure a 1-second gap
+    await new Promise((resolve) =>
+      setTimeout(resolve, MIN_DELAY - timeSinceLast)
+    );
+  }
+  lastQueryTime = Date.now(); // Update the last query time
+  return await index.query(queryParams); // Execute the query
+}
+
+// Modified enforceMaxEmails function
 async function enforceMaxEmails(userId) {
   try {
-    // First check how many unique emails the user has
-    const existingEmails = await index.query({
-      vector: new Array(1536).fill(0), // Dummy vector
+    // Query Pinecone with a 1-second delay enforced
+    const existingEmails = await delayedQuery({
+      vector: new Array(1536).fill(0),
       topK: 10000,
       includeMetadata: true,
       filter: { user_id: { $eq: userId } },
     });
 
-    // Create a map of email IDs with their oldest timestamp
+    // Process the query results
     const emailMap = new Map();
     existingEmails.matches.forEach((match) => {
       const emailId = match.metadata.email_id;
@@ -117,17 +201,17 @@ async function enforceMaxEmails(userId) {
       }
     });
 
-    // If under limit, do nothing
+    // If the number of unique emails is less than 500, no action needed
     if (emailMap.size < 500) return;
 
-    // Find the oldest email ID
+    // Find the oldest email to delete
     const oldestEntry = [...emailMap.entries()].reduce((oldest, current) => {
       return current[1].timestamp < oldest[1].timestamp ? current : oldest;
     });
 
     console.log(`Deleting oldest email ${oldestEntry[0]} for user ${userId}`);
 
-    // Delete all chunks for the oldest email
+    // Delete the oldest email's vectors from Pinecone
     await index.deleteMany({
       filter: {
         $and: [
@@ -141,56 +225,78 @@ async function enforceMaxEmails(userId) {
     throw error;
   }
 }
-
 // Modified saveEmailChunks function
 async function saveEmailChunks(userId, emailId, emailText) {
-  try {
-    console.log("Saving email chunks...");
+  const MAX_RETRIES = 3;
+  let retryCount = 0;
 
-    // First enforce email limits
-    await enforceMaxEmails(userId); // Now properly awaited
+  // Helper function for delay
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-    const chunks = chunkEmail(emailText, 512, 100);
-    const vectors = [];
-    const timestamp = Date.now(); // Add timestamp to metadata
+  while (retryCount < MAX_RETRIES) {
+    try {
+      console.log("Saving email chunks...");
 
-    for (let i = 0; i < chunks.length; i++) {
-      const embedding = await getRateLimitedEmbedding(chunks[i]);
+      // Enforce any user-specific limits (if applicable)
+      await enforceMaxEmails(userId);
 
-      vectors.push({
-        id: `${userId}_${emailId}_chunk${i}`,
-        values: embedding,
-        metadata: {
-          user_id: userId.toString(),
-          email_id: emailId.toString(),
-          chunk_id: i,
-          content: chunks[i],
-          timestamp: timestamp, // Add timestamp to metadata
-        },
-      });
-    }
+      // Split the email into chunks
+      const chunks = chunkEmail(emailText, 512, 100);
+      const vectors = [];
+      const timestamp = Date.now();
 
-    if (vectors.length === 0) {
-      console.error("No valid vectors to upsert");
+      // Generate embeddings for each chunk
+      for (let i = 0; i < chunks.length; i++) {
+        const embedding = await getRateLimitedEmbedding(chunks[i]);
+        vectors.push({
+          id: `${userId}_${emailId}_chunk${i}`,
+          values: embedding,
+          metadata: {
+            user_id: userId.toString(),
+            email_id: emailId.toString(),
+            chunk_id: i,
+            content: chunks[i],
+            timestamp: timestamp,
+          },
+        });
+      }
+
+      if (vectors.length === 0) {
+        console.error("No valid vectors to upsert");
+        return;
+      }
+
+      // Upsert vectors one at a time with a 1-second delay between each
+      for (let i = 0; i < vectors.length; i++) {
+        console.log(`Upserting vector ${i + 1} of ${vectors.length}`);
+        await index.upsert([vectors[i]]); // Upsert a single vector
+
+        // Wait 1 second before the next vector (skip delay on the last one)
+        if (i < vectors.length - 1) {
+          await delay(2000); // 1-second delay between vectors
+        }
+      }
+
+      console.log(
+        `Successfully saved ${vectors.length} vectors for email ${emailId}`
+      );
       return;
+    } catch (error) {
+      if (
+        error.name === "PineconeConnectionError" &&
+        retryCount < MAX_RETRIES - 1
+      ) {
+        const backoffTime = Math.pow(2, retryCount) * 1000; // Exponential backoff
+        console.warn(`Connection error, retrying in ${backoffTime}ms...`);
+        await delay(backoffTime);
+        retryCount++;
+      } else {
+        console.error("Error saving email chunks:", error);
+        throw error;
+      }
     }
-
-    // Batch upsert with rate limiting
-    const BATCH_SIZE = 100;
-    for (let i = 0; i < vectors.length; i += BATCH_SIZE) {
-      const batch = vectors.slice(i, i + BATCH_SIZE);
-      await index.upsert(batch);
-      await delay(200); // Proper rate limiting
-    }
-
-    console.log(
-      `Successfully saved ${vectors.length} chunks for email ${emailId}
-          ++++++++++++++++++++++++++++++++++++++++++++++++++++++++`
-    );
-  } catch (error) {
-    console.error("Error saving email chunks:", error);
-    throw error;
   }
+  throw new Error("Max retries reached for upsert");
 }
 
 async function retrieveFullEmail(

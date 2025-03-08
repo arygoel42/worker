@@ -815,48 +815,70 @@ async function createFilter(accessToken, forwardingEmail, criteria) {
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
 let Gmailprogress = 0;
-let totalEmails = 300;
+let totalEmails = 500;
 async function fetchLast50Emails(accessToken, progressCallback) {
+  const totalEmails = 500; // Max emails to fetch
   const oauth2Client = new google.auth.OAuth2();
   oauth2Client.setCredentials({ access_token: accessToken });
 
   const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
   try {
-    const response = await gmail.users.messages.list({
-      userId: "me",
-      maxResults: totalEmails,
-    });
+    let messageIds = [];
+    let nextPageToken = null;
 
-    if (!response.data.messages) {
+    while (messageIds.length < totalEmails) {
+      const response = await gmail.users.messages.list({
+        userId: "me",
+        q: "category:primary", // Only fetch emails in the Primary category
+        maxResults: Math.min(100, totalEmails - messageIds.length),
+        pageToken: nextPageToken,
+      });
+
+      if (!response.data.messages || response.data.messages.length === 0) {
+        console.log("No more emails found.");
+        break;
+      }
+
+      messageIds = messageIds.concat(
+        response.data.messages.map((msg) => msg.id)
+      );
+      nextPageToken = response.data.nextPageToken;
+      if (!nextPageToken) break;
+    }
+
+    messageIds = messageIds.slice(0, totalEmails);
+    if (messageIds.length === 0) {
       console.log("No emails found.");
       return [];
     }
 
-    // Fetch full details for each message and include the message ID
+    console.log(`Fetched ${messageIds.length} primary emails.`);
+
+    // Fetch email details
     const emailDetails = [];
-    for (let i = 0; i < response.data.messages.length; i++) {
-      const message = response.data.messages[i];
+    for (let i = 0; i < messageIds.length; i++) {
+      const messageId = messageIds[i];
 
       if (progressCallback) {
-        await progressCallback(i + 1, totalEmails);
+        await progressCallback(i + 1, messageIds.length);
       }
-      // Fetch email content using the message ID
-      const emailContent = await getMessageDetails(accessToken, message.id);
 
-      // Add a rate-limiting delay (e.g., 500ms between requests)
-      await delay(500); // Adjust the delay based on your needs
+      const emailContent = await getMessageDetails(accessToken, messageId);
+      await delay(500); // Prevent API rate limits
 
-      // Push the result into the array
       emailDetails.push({
-        messageId: message.id,
+        messageId: messageId,
         content: emailContent,
       });
+
+      console.log("Processed emails:", emailDetails.length);
     }
 
     return emailDetails;
   } catch (error) {
     console.error("Error fetching emails:", error);
+    throw error;
   }
 }
 

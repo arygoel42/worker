@@ -10,136 +10,272 @@ const {
 const { fetchLast50Emails } = require("./gmailService.js");
 require("dotenv").config();
 const OpenAI = require("openai");
-const path = require("path");
-const dotenv = require("dotenv");
+const compression = require("compression");
 
+app.use(compression());
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 
+// Flag to track shutdown state
+let isShuttingDown = false;
+
+// Create a Redis client connection pool
 const taskQueue = new Bull("task-queue", {
   redis: {
     host: process.env.HOST,
     port: 15237,
     password: process.env.REDISPASS,
+    maxRetriesPerRequest: 3,
+    enableReadyCheck: false,
+  },
+  limiter: {
+    max: 5,
+    duration: 1000,
+  },
+  defaultJobOptions: {
+    removeOnComplete: true,
+    removeOnFail: false,
+    attempts: 3,
+    backoff: {
+      type: "exponential",
+      delay: 1000,
+    },
   },
 });
 
+// Create OpenAI client once
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-console.log("Worker initialized", process.env.HOST, process.env.REDISPASS);
+console.log("Worker initialized", process.env.HOST);
 
-// **Process jobs based on type**
-taskQueue.process("onboarding", async (job) => {
-  console.log("Processing onboarding task for new user...");
-  const { accessToken, userId } = job.data;
+// Use a separate map to track active jobs
+const activeJobs = new Map();
+
+// Helper function to update progress
+const updateProgress = async (client, userId, progressData) => {
+  // Skip updates during shutdown
+  if (isShuttingDown) return;
+
   const progressKey = `progress:${userId}`;
+  await client.set(progressKey, JSON.stringify(progressData));
+};
+
+// Add a check for shutdown state in all job processors
+taskQueue.process("onboarding", 5, async (job, done) => {
+  console.log(`Processing onboarding task for user ${job.data.userId}...`);
+  const { accessToken, userId } = job.data;
+
+  activeJobs.set(job.id, { type: "onboarding", userId });
+
+  if (isShuttingDown) {
+    activeJobs.delete(job.id);
+    return done(new Error("Server is shutting down"));
+  }
 
   try {
-    // Initialize progress
-    await taskQueue.client.set(
-      progressKey,
-      JSON.stringify({
-        phase: "initializing",
-        fetch: 0,
-        save: 0,
-        total: 0,
-      })
-    );
+    await updateProgress(taskQueue.client, userId, {
+      phase: "initializing",
+      fetch: 0,
+      save: 0,
+      total: 0,
+    });
 
-    // Phase 1: Fetch emails
     let emails = [];
+    let lastProgressUpdate = Date.now();
+
     const emailFetchProgress = async (current, total) => {
-      const progress = Math.round((current / total) * 50); // 50% weight for fetching
-      await taskQueue.client.set(
-        progressKey,
-        JSON.stringify({
-          phase: "fetching",
-          fetch: progress,
-          save: 0,
-          total: progress,
-        })
-      );
+      if (isShuttingDown) throw new Error("Server is shutting down");
+      const now = Date.now();
+      if (now - lastProgressUpdate < 500 && current < total) return;
+      lastProgressUpdate = now;
+      const progress = Math.round((current / total) * 50);
+      await updateProgress(taskQueue.client, userId, {
+        phase: "fetching",
+        fetch: progress,
+        save: 0,
+        total: progress,
+      });
     };
 
-    // Modified fetch function with progress reporting
     emails = await fetchLast50Emails(accessToken, emailFetchProgress);
 
-    // Phase 2: Save to Pinecone
     const totalEmails = emails.length;
-    for (let i = 0; i < totalEmails; i++) {
-      await saveEmailChunks(userId, emails[i].messageId, emails[i].content);
+    const batchSize = 5;
 
-      const saveProgress = Math.round(((i + 1) / totalEmails) * 50); // 50% weight for saving
-      const total = 50 + saveProgress; // 50% from fetch + current save progress
-
-      await taskQueue.client.set(
-        progressKey,
-        JSON.stringify({
-          phase: "saving",
-          fetch: 50, // Fetching complete
-          save: saveProgress,
-          total: total,
-        })
+    for (let i = 0; i < totalEmails; i += batchSize) {
+      if (isShuttingDown) throw new Error("Server is shutting down");
+      const batch = emails.slice(i, Math.min(i + batchSize, totalEmails));
+      await Promise.all(
+        batch.map((email) =>
+          saveEmailChunks(userId, email.messageId, email.content)
+        )
       );
+
+      const saveProgress = Math.round(
+        (Math.min(i + batchSize, totalEmails) / totalEmails) * 50
+      );
+      await updateProgress(taskQueue.client, userId, {
+        phase: "saving",
+        fetch: 50,
+        save: saveProgress,
+        total: 50 + saveProgress,
+      });
     }
 
-    // Mark complete
-    await taskQueue.client.set(
-      progressKey,
-      JSON.stringify({
-        phase: "complete",
-        fetch: 50,
-        save: 50,
-        total: 100,
-      })
-    );
+    await updateProgress(taskQueue.client, userId, {
+      phase: "complete",
+      fetch: 50,
+      save: 50,
+      total: 100,
+    });
+
+    activeJobs.delete(job.id);
+    done(null, { status: "success", userId });
   } catch (error) {
-    await taskQueue.client.set(
-      progressKey,
-      JSON.stringify({
+    if (!isShuttingDown) {
+      try {
+        await deleteEmails(userId);
+      } catch (error) {
+        console.error(
+          `Failed to delete emails for user ${userId}:`,
+          deleteError
+        );
+      }
+      await updateProgress(taskQueue.client, userId, {
         phase: "error",
         fetch: 0,
         save: 0,
         total: -1,
-      })
-    );
+      });
+    }
+    activeJobs.delete(job.id);
+    done(error);
+  }
+});
+
+taskQueue.process("embedding", async (job, done) => {
+  console.log(`Processing embedding task for user ${job.data.userId}...`);
+  const { userId, emailId, emailContent } = job.data;
+
+  // Track this job as active
+  activeJobs.set(job.id, { type: "embedding", userId });
+
+  // Check if we're shutting down
+  if (isShuttingDown) {
+    activeJobs.delete(job.id);
+    return done(new Error("Server is shutting down"));
+  }
+
+  try {
+    await saveEmailChunks(userId, emailId, emailContent);
+    console.log("RAG embedding complete for user", userId);
+    activeJobs.delete(job.id);
+    return { status: "success", userId };
+  } catch (error) {
+    console.error(`Embedding error for user ${userId}:`, error);
+    activeJobs.delete(job.id);
     throw error;
   }
 });
-taskQueue.process("embedding", async (job) => {
-  console.log("Processing existing user task...");
 
-  const { userId, emailId, emailContent } = job.data; // Existing user inputs
-  try {
-    saveEmailChunks(userId, emailId, emailContent);
-
-    console.log("RAG embedding complete for user", userId);
-  } catch (error) {}
-});
-
-taskQueue.process("disableRAG", async (job) => {
+taskQueue.process("disableRAG", 5, async (job, done) => {
+  console.log(`Processing disableRAG task for user ${job.data.userId}...`);
   const { userId } = job.data;
 
-  deleteEmails(userId);
+  activeJobs.set(job.id, { type: "disableRAG", userId });
 
-  console.log("deleting all emails from databse for user", userId);
+  if (isShuttingDown) {
+    activeJobs.delete(job.id);
+    return done(new Error("Server is shutting down"));
+  }
+
+  try {
+    await updateProgress(taskQueue.client, userId, {
+      phase: "deleting",
+      fetch: 0,
+      save: 0,
+      total: 0,
+    });
+
+    let lastProgressUpdate = Date.now();
+    await deleteEmails(userId, async (current, total) => {
+      if (isShuttingDown) throw new Error("Server is shutting down");
+      const now = Date.now();
+      if (now - lastProgressUpdate < 500 && current < total) return;
+      lastProgressUpdate = now;
+      const progress = Math.round((current / total) * 100);
+      await updateProgress(taskQueue.client, userId, {
+        phase: "deleting",
+        fetch: 0,
+        save: 0,
+        total: progress,
+      });
+    });
+
+    await updateProgress(taskQueue.client, userId, {
+      phase: "complete",
+      fetch: 0,
+      save: 0,
+      total: 100,
+    });
+
+    console.log("Deleted all emails from database for user", userId);
+    activeJobs.delete(job.id);
+    done(null, { status: "success", userId });
+  } catch (error) {
+    if (!isShuttingDown) {
+      await updateProgress(taskQueue.client, userId, {
+        phase: "error",
+        fetch: 0,
+        save: 0,
+        total: -1,
+      });
+    }
+    activeJobs.delete(job.id);
+    done(error);
+  }
 });
-
 // Handle failed jobs
 taskQueue.on("failed", (job, err) => {
-  console.error(`Job failed [${job.name}]:`, err.message);
+  console.error(
+    `Job failed [${job.name}] for user ${job.data.userId}:`,
+    err.message
+  );
+  activeJobs.delete(job.id);
 });
 
-// Remove completed jobs
+// Properly remove completed jobs
 taskQueue.on("completed", async (job) => {
+  console.log(`Job completed [${job.name}] for user ${job.data.userId}`);
+  activeJobs.delete(job.id);
   await job.remove();
 });
 
+// Implement API endpoints with response caching
+const cache = new Map();
+const CACHE_TTL = 5000; // 5 seconds TTL
+
 app.get("/progress", async (req, res) => {
+  // Don't process new requests during shutdown
+  if (isShuttingDown) {
+    return res.status(503).json({ error: "Server is shutting down" });
+  }
+
   const { userId } = req.query;
+  if (!userId) {
+    return res.status(400).json({ error: "Missing userId parameter" });
+  }
+
   const progressKey = `progress:${userId}`;
+  const cacheKey = `progress:${userId}`;
+  const cachedResponse = cache.get(cacheKey);
+
+  // Return cached response if available and fresh
+  if (cachedResponse && Date.now() - cachedResponse.timestamp < CACHE_TTL) {
+    return res.json(cachedResponse.data);
+  }
 
   try {
     const progressData = await taskQueue.client.get(progressKey);
@@ -150,62 +286,123 @@ app.get("/progress", async (req, res) => {
       total: 0,
     };
 
-    res.json(progressData ? JSON.parse(progressData) : defaultProgress);
+    const response = progressData ? JSON.parse(progressData) : defaultProgress;
+
+    // Cache the response
+    cache.set(cacheKey, {
+      timestamp: Date.now(),
+      data: response,
+    });
+
+    res.json(response);
   } catch (error) {
-    res.status(500).json({ ...defaultProgress, phase: "error" });
+    console.error(`Error fetching progress for user ${userId}:`, error);
+    res.status(500).json({ phase: "error", fetch: 0, save: 0, total: 0 });
   }
 });
 
 app.get("/", (req, res) => {
+  if (isShuttingDown) {
+    return res.status(503).json({ message: "Server is shutting down" });
+  }
   res.send("Worker is running");
 });
 
+// Optimize email search with caching
+const searchCache = new Map();
+const SEARCH_CACHE_TTL = 60000; // 1 minute TTL for search results
+
 app.post("/augmentedEmailSearch", async (req, res) => {
+  // Don't process new requests during shutdown
+  if (isShuttingDown) {
+    return res.status(503).json({ error: "Server is shutting down" });
+  }
+
   const { userId, query } = req.body;
 
   if (!userId || !query) {
     return res.status(400).json({ error: "Missing userId or query" });
   }
 
-  // Retrieve the full email based on the query
-  const fullEmails = await retrieveFullEmail(userId, query);
+  const cacheKey = `search:${userId}:${query}`;
+  const cachedResult = searchCache.get(cacheKey);
 
-  if (!fullEmails || fullEmails.length === 0) {
-    return res.status(404).json({ error: "No relevant emails found." });
+  // Return cached response if available and fresh
+  if (cachedResult && Date.now() - cachedResult.timestamp < SEARCH_CACHE_TTL) {
+    return res.json(cachedResult.data);
   }
 
-  const currentDate = new Date().toISOString().split("T")[0]; // Get today's date in YYYY-MM-DD format
+  try {
+    //open api call
+    // for loop append response to a array
+    //then send as context to us the one that returns the most amount of email ids.
+    // Retrieve the full email based on the query
+    const rewrite_prompt = `The following is the user's query: "${query}". 
 
-  const prompt = `
-  You are an AI assistant that helps users retrieve relevant information from their emails. 
-  Your responses should be **concise, relevant, and strictly based on the provided email context.** 
+    Your task is to rewrite the query to ensure it works optimally with my RAG (Retrieval-Augmented Generation) system. The RAG system uses a retrieval process to find the most relevant emails from the user's inbox, and then a generation model is applied to answer the user's query based on those emails.
+    
+    Please rewrite the query so that it is clear, concise, and properly structured for the RAG system to retrieve the most relevant emails and generate the best response. Keep the same tone and style as the original query, but ensure it works effectively with the system's capabilities.
+    
+    Only return the rewritten query, and ensure it is optimized for retrieving and generating information accurately from the user's emails.`;
 
-  **Date Understanding:**
-  - **Today's date is: ${currentDate}**.  
-  - If an email references a relative time (e.g., "tomorrow," "next week," or "yesterday"), interpret it based on the email's **sent date** rather than today's date.  
-  - Convert relative date references into absolute dates when answering user questions.  
+    const rewrite_response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: rewrite_prompt }],
+    });
 
-  **Relevant Emails Based on the Search Query:**  
+    // Extract the rewritten query
+    const rewritten_query = rewrite_response.choices[0].message.content.trim();
 
-  ${fullEmails
-    .map((email) => `Date: ${email.date}\nContent: ${email.content}`)
-    .join("\n\n")}
+    console.log("Rewritten Query:", rewritten_query);
 
-  **User's Query:** "${query}"  
+    const fullEmails = await retrieveFullEmail(userId, rewritten_query);
 
-  **Instructions:**  
-  - Use the email dates to correctly interpret relative time references.  
-  - If the answer is unclear, state that the emails do not contain enough information.  
-  - Do **not** make up details that are not explicitly mentioned in the emails.  
+    if (!fullEmails || fullEmails.length === 0) {
+      const noResult = { response: "No relevant emails found", emailIds: [] };
+      searchCache.set(cacheKey, { timestamp: Date.now(), data: noResult });
+      return res.status(200).json(noResult);
+    }
 
-  Based **only** on the given emails and the provided context, answer the question as accurately as possible.
+    const currentDate = new Date().toISOString().split("T")[0];
+
+    const prompt = `
+You are an AI assistant that helps users retrieve relevant information from their emails. Your responses must be **concise, relevant, and strictly based on the provided email context.** Do not invent details or use information beyond the given emails.
+
+**Date Understanding:**
+- Today's date is: ${currentDate} (format: YYYY-MM-DD).
+- Interpret relative time references (e.g., "tomorrow," "next week," "yesterday") based on the email's **sent date**, not today's date. Convert these to absolute dates (YYYY-MM-DD) in your answers.
+- Example: If an email sent on 2025-03-01 says "meeting tomorrow," interpret it as 2025-03-02.
+
+**Relevant Emails Based on the Search Query:**
+${fullEmails
+  .map(
+    (email, index) =>
+      `### Email ${index + 1}\n**ID:** ${email.emailId}
+      }\n**Content:** ${email.content}`
+  )
+  .join("\n\n")}
+
+**User's Query:** "${rewritten_query}"
+
+**Instructions:**
+- Base your answer **only** on the provided emails. If the query requires synthesis across multiple emails, prioritize the most relevant email(s) and explain your reasoning briefly.
+- For ambiguous queries (e.g., "meeting next week"), use the most recent relevant email unless specified otherwise, and note your choice.
+- If the answer is unclear or not found, respond with: "**No Answer Found:** The provided emails do not contain enough information to answer this query."
+- Avoid speculation or external knowledge—stick to the email data.
+- Include the IDs of the emails that were directly relevant to your answer in the emailIds array.
+
+**Response Format:**
+Provide your response in the following JSON format:
+{
+  "response": "Your markdown-formatted answer here. Use headers (e.g., ##), lists (- or *), bold (**text**), italic (*text*), and paragraphs as needed to structure your answer. Keep responses concise yet informative, avoiding unnecessary filler."
+  "emailIds": ["list", "of", "email", "IDs", "used"]
+}
 `;
 
-  console.log("Prompt:", prompt);
+    console.log("Prompt:", prompt);
 
-  try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
@@ -214,12 +411,23 @@ app.post("/augmentedEmailSearch", async (req, res) => {
         },
         { role: "user", content: prompt },
       ],
+      response_format: { type: "json_object" }, // Ensure structured JSON output
     });
-    console.log(
-      "Semantic Search Completion:",
-      completion.choices[0].message.content
-    );
-    res.status(200).json({ completion: completion.choices[0].message.content });
+
+    // Parse the JSON response from OpenAI
+    const result = completion.choices[0].message.content;
+    jsonResult = JSON.parse(result);
+
+    console.log("Result:", jsonResult);
+
+    // Cache the structured result
+    searchCache.set(cacheKey, {
+      timestamp: Date.now(),
+      data: result,
+    });
+
+    // Return the structured response
+    res.status(200).json({ completion: jsonResult });
   } catch (error) {
     console.error("Error in semantic search:", error);
     res
@@ -227,37 +435,181 @@ app.post("/augmentedEmailSearch", async (req, res) => {
       .json({ error: "An error occurred while processing your request." });
   }
 });
+// Endpoint to cancel active jobs for a user
+app.post("/cancelJobs", async (req, res) => {
+  // Don't process new requests during shutdown
+  if (isShuttingDown) {
+    return res.status(503).json({ error: "Server is shutting down" });
+  }
 
-//__________________________
+  const { userId } = req.body;
 
-//__________________________
+  if (!userId) {
+    return res.status(400).json({ error: "Missing userId" });
+  }
 
-// Start Server
-app.listen(3023, () => {
+  try {
+    let canceledCount = 0;
+
+    // Find all active jobs for this user
+    for (const [jobId, jobInfo] of activeJobs.entries()) {
+      if (jobInfo.userId === userId) {
+        const job = await taskQueue.getJob(jobId);
+        if (job) {
+          await job.discard();
+          await job.moveToFailed(
+            new Error("Job canceled by user request"),
+            true
+          );
+          canceledCount++;
+        }
+      }
+    }
+
+    // Update progress to canceled
+    await updateProgress(taskQueue.client, userId, {
+      phase: "canceled",
+      fetch: 0,
+      save: 0,
+      total: 0,
+    });
+
+    res.json({
+      success: true,
+      message: `Canceled ${canceledCount} jobs for user ${userId}`,
+    });
+  } catch (error) {
+    console.error(`Error canceling jobs for user ${userId}:`, error);
+    res.status(500).json({ error: "Failed to cancel jobs" });
+  }
+});
+
+// Periodic cleanup of old cache entries
+const cacheCleanupInterval = setInterval(() => {
+  const now = Date.now();
+
+  // Skip during shutdown
+  if (isShuttingDown) return;
+
+  // Clean up progress cache
+  for (const [key, value] of cache.entries()) {
+    if (now - value.timestamp > CACHE_TTL) {
+      cache.delete(key);
+    }
+  }
+
+  // Clean up search cache
+  for (const [key, value] of searchCache.entries()) {
+    if (now - value.timestamp > SEARCH_CACHE_TTL) {
+      searchCache.delete(key);
+    }
+  }
+}, 60000); // Run cleanup every minute
+
+// Reference to the HTTP server
+let server;
+
+// Improved shutdown function - fast and forceful
+const shutdown = async () => {
+  // Prevent multiple shutdown calls
+  if (isShuttingDown) {
+    console.log("Shutdown already in progress");
+    return;
+  }
+
+  const startTime = Date.now();
+  console.log("Initiating FORCEFUL shutdown...");
+  isShuttingDown = true;
+
+  // Set a hard timeout in case something hangs
+  const forceExitTimeout = setTimeout(() => {
+    console.error("Shutdown timed out after 10 seconds, forcing exit");
+    process.exit(1);
+  }, 10000);
+
+  try {
+    // 1. Stop HTTP server immediately
+    console.log("Stopping HTTP server...");
+    server.close();
+
+    // 2. Pause the queue to prevent new job processing
+    console.log("Pausing queue...");
+    await taskQueue.pause(true);
+
+    // 3. Obliterate the queue (removes all jobs including active ones)
+    console.log("Obliterating queue...");
+    await taskQueue.obliterate({ force: true });
+
+    // 4. Clean up progress data from Redis
+    console.log("Cleaning progress data...");
+    const progressKeys = await taskQueue.client.keys("progress:*");
+    if (progressKeys.length > 0) {
+      await taskQueue.client.del(...progressKeys);
+    }
+
+    // 5. Clean up cache data
+    cache.clear();
+    searchCache.clear();
+
+    // 6. Close Bull queue and Redis connections
+    console.log("Closing queue and connections...");
+    await taskQueue.close(true);
+
+    // 7. Try to forcefully disconnect Redis
+    if (taskQueue.client && taskQueue.client.disconnect) {
+      await taskQueue.client.disconnect();
+    }
+
+    clearTimeout(forceExitTimeout);
+    const shutdownTime = (Date.now() - startTime) / 1000;
+    console.log(`Forceful shutdown completed in ${shutdownTime}s`);
+
+    // Exit process with success code
+    process.exit(0);
+  } catch (error) {
+    console.error("Error during forceful shutdown:", error);
+    clearTimeout(forceExitTimeout);
+    process.exit(1);
+  }
+};
+
+app.post("/toggleRAG", async (req, res) => {
+  if (isShuttingDown)
+    return res.status(503).json({ error: "Server is shutting down" });
+  const { userId, enable, accessToken } = req.body;
+  if (!userId) return res.status(400).json({ error: "Missing userId" });
+
+  try {
+    if (enable) {
+      // Trigger onboarding when enabling RAG
+      await taskQueue.add(
+        "onboarding",
+        { accessToken, userId },
+        { jobId: `onboarding-${userId}` }
+      );
+      res.json({ success: true, message: "RAG enabled, onboarding started" });
+    } else {
+      // Trigger disableRAG when disabling
+      await taskQueue.add(
+        "disableRAG",
+        { userId },
+        { jobId: `disableRAG-${userId}` }
+      );
+      res.json({ success: true, message: "RAG disabled, cleanup started" });
+    }
+  } catch (error) {
+    console.error(`Error toggling RAG for user ${userId}:`, error);
+    res.status(500).json({ error: "Failed to toggle RAG" });
+  }
+});
+
+// Create HTTP server
+server = app.listen(3023, () => {
   console.log("Worker listening on port 3023");
 });
 
-const shutdown = async () => {
-  console.log("Shutting down worker...");
-
-  try {
-    // Pause processing new jobs
-    await taskQueue.pause();
-
-    // Remove all waiting and delayed jobs
-    await taskQueue.empty();
-    console.log("All queued tasks have been removed.");
-
-    // Close Redis connection
-    await taskQueue.close();
-    console.log("Redis connection closed.");
-
-    process.exit(0); // Exit gracefully
-  } catch (error) {
-    console.error("Error during shutdown:", error);
-    process.exit(1); // Exit with failure code
-  }
-};
+// Add timeout to server responses to prevent hanging connections
+server.setTimeout(30000); // 30 second timeout
 
 // Handle process termination signals
 process.on("SIGINT", shutdown); // Ctrl + C
@@ -267,6 +619,12 @@ process.on("uncaughtException", (err) => {
   shutdown();
 });
 
-//connect button and have it start and stop RAG, then work on querying via the frontend, then add progress bar.
-
-//Not sure what happens if the user clicks enable and disable really fast so we may have to add a cooldown of at least 15 minutes.
+// Obliterate the queue on startup to kill any existing tasks
+taskQueue
+  .obliterate({ force: true })
+  .then(() => {
+    console.log("All existing tasks have beenkilled on startup.");
+  })
+  .catch((err) => {
+    console.error("Error obliterating queue on startup:", err);
+  });
