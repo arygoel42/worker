@@ -10,6 +10,8 @@ const { removeStopwords } = require("stopword");
 const app = express();
 
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+const pLimit = require("p-limit");
+const limit = pLimit(5);
 
 const pc = new Pinecone({
   apiKey: process.env.PINECONE_APIKEY,
