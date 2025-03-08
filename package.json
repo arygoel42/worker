@@ -23,7 +23,7 @@
     "natural": "^8.0.1",
     "nodemon": "^3.1.7",
     "openai": "^4.71.1",
-    "p-limit": "^6.2.0",
+    "p-limit": "^3.1.0",
     "rate-limiter-flexible": "^5.0.5",
     "stopword": "^3.1.4"
   },
