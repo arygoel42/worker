@@ -827,6 +827,7 @@ async function fetchLast50Emails(accessToken, progressCallback) {
     let messageIds = [];
     let nextPageToken = null;
 
+    // Fetch message IDs
     while (messageIds.length < totalEmails) {
       const response = await gmail.users.messages.list({
         userId: "me",
@@ -853,32 +854,39 @@ async function fetchLast50Emails(accessToken, progressCallback) {
       return [];
     }
 
-    console.log(`Fetched ${messageIds.length} primary emails.`);
+    console.log(`Fetched ${messageIds.length} primary email IDs.`);
 
-    // Fetch email details
+    // Fetch email details, skipping any that fail
     const emailDetails = [];
     for (let i = 0; i < messageIds.length; i++) {
       const messageId = messageIds[i];
 
-      if (progressCallback) {
-        await progressCallback(i + 1, messageIds.length);
+      try {
+        if (progressCallback) {
+          await progressCallback(i + 1, messageIds.length);
+        }
+
+        const emailContent = await getMessageDetails(accessToken, messageId);
+        await delay(500); // Prevent API rate limits
+
+        emailDetails.push({
+          messageId: messageId,
+          content: emailContent,
+        });
+
+        console.log("Processed emails:", emailDetails.length);
+      } catch (error) {
+        console.warn(`Failed to fetch email ${messageId}, skipping:`, error);
+        continue; // Skip this email and move to the next one
       }
-
-      const emailContent = await getMessageDetails(accessToken, messageId);
-      await delay(500); // Prevent API rate limits
-
-      emailDetails.push({
-        messageId: messageId,
-        content: emailContent,
-      });
-
-      console.log("Processed emails:", emailDetails.length);
     }
 
+    console.log(`Successfully processed ${emailDetails.length} emails.`);
     return emailDetails;
   } catch (error) {
-    console.error("Error fetching emails:", error);
-    throw error;
+    // Handle errors in fetching message IDs (e.g., API authentication failure)
+    console.error("Error fetching email IDs:", error);
+    return []; // Return empty array if the initial fetch fails
   }
 }
 

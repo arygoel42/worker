@@ -6,6 +6,7 @@ const {
   saveEmailChunks,
   retrieveFullEmail,
   deleteEmails,
+  enforceMaxEmails,
 } = require("./RAGService.js");
 const { fetchLast50Emails } = require("./gmailService.js");
 require("dotenv").config();
@@ -169,6 +170,8 @@ taskQueue.process("embedding", async (job, done) => {
   }
 
   try {
+    await enforceMaxEmails(userId);
+
     await saveEmailChunks(userId, emailId, emailContent);
     console.log("RAG embedding complete for user", userId);
     activeJobs.delete(job.id);

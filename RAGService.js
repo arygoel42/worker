@@ -181,15 +181,20 @@ async function delayedQuery(queryParams) {
 // Modified enforceMaxEmails function
 async function enforceMaxEmails(userId) {
   try {
-    // Query Pinecone with a 1-second delay enforced
+    // Query Pinecone for chunks with chunk_id: 1 for the specific user
     const existingEmails = await delayedQuery({
       vector: new Array(1536).fill(0),
-      topK: 10000,
+      topK: 10000, // Still set high, but we'll filter by chunk_id
       includeMetadata: true,
-      filter: { user_id: { $eq: userId } },
+      filter: {
+        $and: [
+          { user_id: { $eq: userId } },
+          { chunk_id: { $eq: 1 } }, // Target only the first chunk of each email
+        ],
+      },
     });
 
-    // Process the query results
+    // Process the query results to count unique email IDs
     const emailMap = new Map();
     existingEmails.matches.forEach((match) => {
       const emailId = match.metadata.email_id;
@@ -211,7 +216,7 @@ async function enforceMaxEmails(userId) {
 
     console.log(`Deleting oldest email ${oldestEntry[0]} for user ${userId}`);
 
-    // Delete the oldest email's vectors from Pinecone
+    // Delete all chunks associated with the oldest email ID
     await index.deleteMany({
       filter: {
         $and: [
@@ -222,7 +227,7 @@ async function enforceMaxEmails(userId) {
     });
   } catch (error) {
     console.error("Error enforcing email limits:", error);
-    throw error;
+    throw error; // Propagate error if query or deletion fails
   }
 }
 // Modified saveEmailChunks function
@@ -238,7 +243,6 @@ async function saveEmailChunks(userId, emailId, emailText) {
       console.log("Saving email chunks...");
 
       // Enforce any user-specific limits (if applicable)
-      await enforceMaxEmails(userId);
 
       // Split the email into chunks
       const chunks = chunkEmail(emailText, 512, 100);
@@ -262,8 +266,8 @@ async function saveEmailChunks(userId, emailId, emailText) {
       }
 
       if (vectors.length === 0) {
-        console.error("No valid vectors to upsert");
-        return;
+        console.warn(`No valid vectors to upsert for email ${emailId}`);
+        return { status: "skipped", reason: "No valid vectors" };
       }
 
       // Upsert vectors one at a time with a 1-second delay between each
@@ -280,7 +284,7 @@ async function saveEmailChunks(userId, emailId, emailText) {
       console.log(
         `Successfully saved ${vectors.length} vectors for email ${emailId}`
       );
-      return;
+      return { status: "success" };
     } catch (error) {
       if (
         error.name === "PineconeConnectionError" &&
@@ -291,12 +295,14 @@ async function saveEmailChunks(userId, emailId, emailText) {
         await delay(backoffTime);
         retryCount++;
       } else {
-        console.error("Error saving email chunks:", error);
-        throw error;
+        console.warn(`Max retries reached for email ${emailId}, skipping...`);
+        return { status: "skipped", reason: "Max retries reached", error };
       }
     }
   }
-  throw new Error("Max retries reached for upsert");
+  // This line won't be reached due to the return in the else clause, but included for clarity
+  console.warn(`Max retries reached for email ${emailId}, skipping...`);
+  return { status: "skipped", reason: "Max retries reached" };
 }
 
 async function retrieveFullEmail(
@@ -432,6 +438,7 @@ module.exports = {
   saveEmailChunks,
   retrieveFullEmail,
   deleteEmails,
+  enforceMaxEmails,
 };
 
 //make sure you import all packages
