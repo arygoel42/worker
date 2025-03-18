@@ -29,7 +29,9 @@ function chunkEmail(emailText, chunkSize = 512, overlap = 50) {
   }
 
   // Preprocess to remove fluff
-  emailText = removeFluff(emailText);
+  // emailText = removeFluff(emailText);
+
+  console.log('emailText:', emailText)
 
   // Initialize tokenizer and variables
   const sentenceTokenizer = new natural.SentenceTokenizer();

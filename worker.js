@@ -160,6 +160,7 @@ taskQueue.process("embedding", async (job, done) => {
   console.log(`Processing embedding task for user ${job.data.userId}...`);
   const { userId, emailId, emailContent } = job.data;
 
+
   // Track this job as active
   activeJobs.set(job.id, { type: "embedding", userId });
 
