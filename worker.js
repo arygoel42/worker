@@ -159,6 +159,7 @@ taskQueue.process("onboarding", 5, async (job, done) => {
 taskQueue.process("embedding", async (job, done) => {
   console.log(`Processing embedding task for user ${job.data.userId}...`);
   const { userId, emailId, emailContent } = job.data;
+  console.log("emailContent", emailContent);
 
 
   // Track this job as active
@@ -172,7 +173,7 @@ taskQueue.process("embedding", async (job, done) => {
 
   try {
     await enforceMaxEmails(userId);
-
+    console.log("EMAIL CONTENT : ", emailContent);
     await saveEmailChunks(userId, emailId, emailContent);
     console.log("RAG embedding complete for user", userId);
     activeJobs.delete(job.id);

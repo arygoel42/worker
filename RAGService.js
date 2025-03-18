@@ -139,7 +139,7 @@ const getEmbedding = async (text) => {
       "https://api.openai.com/v1/embeddings",
       {
         input: text,
-        model: "text-embedding-ada-002",
+        model: "text-embedding-3-large", // Changed to the higher-dimension model
       },
       {
         headers: {
@@ -148,7 +148,7 @@ const getEmbedding = async (text) => {
         },
       }
     );
-    return response.data.data[0].embedding;
+    return response.data.data[0].embedding; // Returns 3072-dimensional vector
   } catch (error) {
     console.error("OpenAI API Error:", error.response?.data || error.message);
     throw error;
@@ -185,7 +185,7 @@ async function enforceMaxEmails(userId) {
   try {
     // Query Pinecone for chunks with chunk_id: 1 for the specific user
     const existingEmails = await delayedQuery({
-      vector: new Array(1536).fill(0),
+      vector: new Array(3072).fill(0),
       topK: 10000, // Still set high, but we'll filter by chunk_id
       includeMetadata: true,
       filter: {
@@ -347,7 +347,7 @@ async function retrieveFullEmail(
   // Step 5: Retrieve chunks for each email, up to the 30-email limit
   for (const [emailId, score] of sortedEmails) {
     const emailChunks = await index.query({
-      vector: Array(1536).fill(0), // Dummy vector to retrieve all chunks
+      vector: Array(3072).fill(0), // Dummy vector to retrieve all chunks
       topK: 100,
       includeMetadata: true,
       filter: { user_id: userId, email_id: emailId },
@@ -384,7 +384,7 @@ async function deleteEmails(userId) {
 
     // Step 1: Find all email IDs belonging to the user
     const queryResults = await index.query({
-      vector: Array(1536).fill(0),
+      vector: Array(3072).fill(0),
       filter: { user_id: userId },
       topK: 10000,
       includeMetadata: true,
@@ -407,7 +407,7 @@ async function deleteEmails(userId) {
       console.log(`Querying Pinecone for email_id: ${emailId}`);
 
       const chunkResults = await index.query({
-        vector: Array(1536).fill(0),
+        vector: Array(3072).fill(0),
         filter: { email_id: { $eq: emailId } }, // Ensure correct filter format
         topK: 10000,
       });
