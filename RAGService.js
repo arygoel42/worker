@@ -310,7 +310,7 @@ async function saveEmailChunks(userId, emailId, emailText) {
 async function retrieveFullEmail(
   userId,
   query,
-  similarityThreshold = 0.8,
+  similarityThreshold = 0.4,
   maxEmails = 30
 ) {
   // Step 1: Convert query into embedding
