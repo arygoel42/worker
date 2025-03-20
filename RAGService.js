@@ -183,10 +183,10 @@ async function delayedQuery(queryParams) {
 // Modified enforceMaxEmails function
 async function enforceMaxEmails(userId) {
   try {
-    // Query Pinecone for chunks with chunk_id: 1 for the specific user
+    // Step 1: Query Pinecone for chunks with chunk_id: 1 for the specific user
     const existingEmails = await delayedQuery({
       vector: new Array(1536).fill(0),
-      topK: 10000, // Still set high, but we'll filter by chunk_id
+      topK: 10000, // Set high to retrieve all chunks
       includeMetadata: true,
       filter: {
         $and: [
@@ -196,7 +196,7 @@ async function enforceMaxEmails(userId) {
       },
     });
 
-    // Process the query results to count unique email IDs
+    // Step 2: Process the query results to count unique email IDs
     const emailMap = new Map();
     existingEmails.matches.forEach((match) => {
       const emailId = match.metadata.email_id;
@@ -208,18 +208,21 @@ async function enforceMaxEmails(userId) {
       }
     });
 
-    // If the number of unique emails is less than 500, no action needed
+    // Step 3: If the number of unique emails is less than 500, no action needed
     if (emailMap.size < 500) return;
 
-    // Find the oldest email to delete
+    // Step 4: Find the oldest email to delete
     const oldestEntry = [...emailMap.entries()].reduce((oldest, current) => {
       return current[1].timestamp < oldest[1].timestamp ? current : oldest;
     });
 
     console.log(`Deleting oldest email ${oldestEntry[0]} for user ${userId}`);
 
-    // Delete all chunks associated with the oldest email ID
-    await index.deleteMany({
+    // Step 5: Query for all vectors with the oldest email_id
+    const deleteCandidates = await index.query({
+      vector: new Array(1536).fill(0), // Dummy vector, since we’re filtering
+      topK: 10000, // Assuming there aren’t more than 10000 chunks per email
+      includeMetadata: true,
       filter: {
         $and: [
           { user_id: { $eq: userId } },
@@ -227,6 +230,14 @@ async function enforceMaxEmails(userId) {
         ],
       },
     });
+
+    // Step 6: Extract IDs from the query results
+    const idsToDelete = deleteCandidates.matches.map((match) => match.id);
+
+    // Step 7: Delete the vectors by their IDs
+    if (idsToDelete.length > 0) {
+      await index.deleteMany(idsToDelete);
+    }
   } catch (error) {
     console.error("Error enforcing email limits:", error);
     throw error; // Propagate error if query or deletion fails
