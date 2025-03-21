@@ -161,7 +161,6 @@ taskQueue.process("embedding", async (job, done) => {
   const { userId, emailId, emailContent } = job.data;
   console.log("emailContent", emailContent);
 
-
   // Track this job as active
   activeJobs.set(job.id, { type: "embedding", userId });
 
@@ -263,7 +262,6 @@ const cache = new Map();
 const CACHE_TTL = 5000; // 5 seconds TTL
 
 app.get("/progress", async (req, res) => {
-  // Don't process new requests during shutdown
   if (isShuttingDown) {
     return res.status(503).json({ error: "Server is shutting down" });
   }
@@ -291,7 +289,18 @@ app.get("/progress", async (req, res) => {
       total: 0,
     };
 
-    const response = progressData ? JSON.parse(progressData) : defaultProgress;
+    let response;
+    if (progressData) {
+      response = JSON.parse(progressData);
+      // If the task is completed, reset it to "waiting" for the next query
+      if (response.phase === "completed") {
+        response = defaultProgress;
+        await taskQueue.client.set(progressKey, JSON.stringify(response)); // Reset in task queue
+        cache.del(cacheKey); // Clear the cache
+      }
+    } else {
+      response = defaultProgress; // No progress data means no active task
+    }
 
     // Cache the response
     cache.set(cacheKey, {
