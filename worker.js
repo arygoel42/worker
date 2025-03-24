@@ -43,8 +43,7 @@ const taskQueue = new Bull("task-queue", {
     },
   },
   settings: {
-    lockDuration: 60000, // 1 minute
-    lockRenewTime: 30000, // 30 seconds
+    lockDuration: 600000, // 1 minute
     maxStalledCount: 3,
   },
 });
@@ -592,8 +591,9 @@ const shutdown = async () => {
   }
 };
 
-taskQueue.on("stalled", (job) => {
-  console.log(`Job ${job.id} has stalled`);
+taskQueue.on("stalled", async (job) => {
+  console.log(`Job ${job.id} stalled, rescheduling in 10s`);
+  await myQueue.add(job.data, { delay: 10000 }); // Retry with delay
 });
 
 app.post("/toggleRAG", async (req, res) => {
