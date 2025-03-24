@@ -587,6 +587,10 @@ const shutdown = async () => {
   }
 };
 
+taskQueue.on("stalled", (job) => {
+  console.log(`Job ${job.id} has stalled`);
+});
+
 app.post("/toggleRAG", async (req, res) => {
   if (isShuttingDown)
     return res.status(503).json({ error: "Server is shutting down" });
