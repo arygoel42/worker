@@ -42,6 +42,11 @@ const taskQueue = new Bull("task-queue", {
       delay: 1000,
     },
   },
+  settings: {
+    lockDuration: 60000, // 1 minute
+    lockRenewTime: 30000, // 30 seconds
+    maxStalledCount: 3,
+  },
 });
 
 // Create OpenAI client once
