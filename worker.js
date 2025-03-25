@@ -67,6 +67,11 @@ const updateProgress = async (client, userId, progressData) => {
   await client.set(progressKey, JSON.stringify(progressData));
 };
 
+setInterval(
+  () => console.log(`Worker alive, Wait: ${taskQueue.getWaitingCount()}`),
+  30000
+);
+
 // Add a check for shutdown state in all job processors
 taskQueue.process("onboarding", 5, async (job, done) => {
   console.log(`Processing onboarding task for user ${job.data.userId}...`);
@@ -180,11 +185,11 @@ taskQueue.process("embedding", async (job, done) => {
     await saveEmailChunks(userId, emailId, emailContent);
     console.log("RAG embedding complete for user", userId);
     activeJobs.delete(job.id);
-    return { status: "success", userId };
+    done(null, { status: "success", userId }); // Fix Bull callback
   } catch (error) {
     console.error(`Embedding error for user ${userId}:`, error);
     activeJobs.delete(job.id);
-    throw error;
+    done(error);
   }
 });
 
@@ -595,6 +600,8 @@ taskQueue.on("stalled", async (job) => {
   console.log(`Job ${job.id} stalled, rescheduling in 10s`);
   await myQueue.add(job.data, { delay: 10000 }); // Retry with delay
 });
+
+taskQueue.client.on("error", (err) => console.log(`Redis error: ${err}`));
 
 app.post("/toggleRAG", async (req, res) => {
   if (isShuttingDown)
