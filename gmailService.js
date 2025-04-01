@@ -4,6 +4,36 @@ const https = require("https");
 const agent = new https.Agent({ rejectUnauthorized: false });
 const { google } = require("googleapis");
 const { htmlToText } = require("html-to-text");
+const { OpenAI } = require("openai");
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+async function getAccessTokenFromRefreshToken(storedRefreshToken) {
+  const tokenEndpoint = "https://oauth2.googleapis.com/token";
+
+  // params needed to generate access token from endpoint
+  const params = new URLSearchParams();
+  params.append("client_id", process.env.CLIENT_ID);
+  params.append("client_secret", process.env.CLIENT_SECRET);
+  params.append("refresh_token", storedRefreshToken);
+  params.append("grant_type", "refresh_token");
+
+  try {
+    const response = await axios.post(tokenEndpoint, params.toString(), {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      httpsAgent: agent,
+    });
+
+    const newAccessToken = response.data.access_token;
+    console.log("New access token:", newAccessToken);
+    return newAccessToken;
+    // sort of verifies the refresh token because will produce an error
+    // if access token can't be generated
+  } catch (error) {
+    console.error("Error fetching access token:", error.response.data);
+  }
+}
 
 function combineMetadataAndContent(emailData) {
   if (!emailData || !emailData.metadata || !emailData.content) {
@@ -486,16 +516,41 @@ async function createDraft(
 ) {
   const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
 
+  // Initialize Gmail API client to fetch original message details
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    "http://localhost:3000/oauth2callback"
+  );
+  oauth2Client.setCredentials({ access_token: accessToken });
+  const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+
+  // Fetch the original message to get its headers
+  const messageResponse = await gmail.users.messages.get({
+    userId: "me",
+    id: messageId,
+    format: "full", // Need headers for Message-ID and Subject
+  });
+
+  const headers = messageResponse.data.payload.headers;
+  const originalMessageId =
+    headers.find((h) => h.name === "Message-ID")?.value ||
+    `<${messageId}@gmail.com>`; // Fallback
+  const originalSubject =
+    headers.find((h) => h.name === "Subject")?.value || "";
+  const replySubject = originalSubject.startsWith("Re:")
+    ? originalSubject
+    : `Re: ${originalSubject}`;
+
   // Create proper email MIME message
   const emailContent = [
     'Content-Type: text/plain; charset="UTF-8"',
     "MIME-Version: 1.0",
     "Content-Transfer-Encoding: 7bit",
     `To: ${toEmail}`,
-    "Subject: Re: ", // "Re:" prefix for replies
-    `In-Reply-To: ${messageId}`,
-    `References: ${messageId}`,
-    `Thread-Id: ${threadId}`,
+    `Subject: ${replySubject}`,
+    `In-Reply-To: ${originalMessageId}`,
+    `References: ${originalMessageId}`,
     "", // Empty line separates headers from body
     messageDescription,
   ].join("\r\n");
@@ -513,7 +568,7 @@ async function createDraft(
       {
         message: {
           raw: encodedMessage,
-          threadId: threadId,
+          threadId: threadId, // Ensure this links to the original thread
         },
       },
       {
@@ -523,7 +578,9 @@ async function createDraft(
         },
       }
     );
-    console.log(`Draft created with ID: ${response.data.id}`);
+    console.log(
+      `Draft created with ID: ${response.data.id}, Thread ID: ${response.data.message.threadId}`
+    );
     return response.data;
   } catch (error) {
     console.error(
@@ -533,7 +590,6 @@ async function createDraft(
     throw error;
   }
 }
-
 async function getOriginalEmailDetails(accessToken, messageId) {
   const emailEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`;
 
@@ -898,6 +954,62 @@ const resetProgress = () => {
   Gmailprogress = 0;
 };
 
+async function massDraft() {}
+
+async function singleDraft(refreshToken, extraContext, emailId, socket) {
+  const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
+
+  socket.emit("status", "fetching email content");
+  const emailContent = await getMessageDetails(accessToken, emailId);
+
+  socket.emit("status", "consuming tokens");
+  const latestEmail = await getOriginalEmailDetails(accessToken, emailId);
+
+  const prompt = `Here is an email for which we need to draft a response: ${emailContent}. Please complete the email draft with a suitable response based on this extra context : ${extraContext}.  The response should be concise and should address the main points of the email. It should also be of the same tone as the original email. Only respond with the body of the draft email.`;
+  // console.log("Promptt:", prompt);
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o",
+    messages: [
+      {
+        role: "system",
+        content: "You are an assistant that helps draft emails.",
+      },
+      { role: "user", content: prompt },
+    ],
+  });
+  const draftedEmail = completion.choices[0].message.content;
+  await createDraft(
+    accessToken,
+    latestEmail.threadId,
+    draftedEmail,
+    emailId,
+    latestEmail
+  );
+
+  socket.emit("response", {
+    message: "I have drafted the email",
+    emailId: emailId,
+  });
+
+  console.log("drafted");
+}
+
+async function relabel(refreshToken, emailId, labelName, socket) {
+  console.log(refreshToken);
+  const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
+  const labelId = await getOrCreatePriorityLabel(accessToken, labelName);
+
+  socket.emit("status", "adding labels");
+
+  await applyLabelToEmail(accessToken, emailId, labelId);
+
+  socket.emit("response", {
+    message: "I have added " + labelName + " to the email",
+    emailId: emailId,
+  });
+  console.log("relabelled");
+}
+
 module.exports = {
   accessGmailApi,
   getMessageDetails,
@@ -918,4 +1030,7 @@ module.exports = {
   fetchLast50Emails,
   fetchProgress,
   resetProgress,
+  massDraft,
+  singleDraft,
+  relabel,
 };

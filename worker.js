@@ -12,7 +12,13 @@ const { fetchLast50Emails } = require("./gmailService.js");
 require("dotenv").config();
 const OpenAI = require("openai");
 const compression = require("compression");
-
+const http = require("http");
+const { Server } = require("socket.io");
+const { setupSocket } = require("./socket.js");
+const server = http.createServer(app); // Create the HTTP server
+const io = new Server(server, {
+  cors: { origin: "http://localhost:3000" }, // Adjust for your frontend
+});
 app.use(compression());
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
@@ -57,6 +63,8 @@ console.log("Worker initialized", process.env.HOST);
 
 // Use a separate map to track active jobs
 const activeJobs = new Map();
+
+setupSocket(io);
 
 // Helper function to update progress
 const updateProgress = async (client, userId, progressData) => {
@@ -531,7 +539,6 @@ const cacheCleanupInterval = setInterval(() => {
 }, 60000); // Run cleanup every minute
 
 // Reference to the HTTP server
-let server;
 
 // Improved shutdown function - fast and forceful
 const shutdown = async () => {
@@ -635,12 +642,11 @@ app.post("/toggleRAG", async (req, res) => {
 });
 
 // Create HTTP server
-server = app.listen(3023, () => {
+server.listen(3023, () => {
   console.log("Worker listening on port 3023");
 });
 
 // Add timeout to server responses to prevent hanging connections
-server.setTimeout(30000); // 30 second timeout
 
 // Handle process termination signals
 process.on("SIGINT", shutdown); // Ctrl + C
