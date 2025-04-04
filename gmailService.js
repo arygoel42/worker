@@ -7,6 +7,81 @@ const { htmlToText } = require("html-to-text");
 const { OpenAI } = require("openai");
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+async function getOriginalEmailDetails2(accessToken, messageId) {
+  const emailEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`;
+
+  try {
+    const response = await axios.get(emailEndpoint, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+      },
+      params: {
+        format: "full", // Get full message including headers
+      },
+    });
+
+    const message = response.data;
+    const headers = message.payload.headers;
+
+    const fromHeader =
+      headers.find((header) => header.name === "From")?.value || "";
+    const subject =
+      headers.find((header) => header.name === "Subject")?.value || "";
+    const smtpMessageId =
+      headers.find((header) => header.name === "Message-ID")?.value ||
+      `<${messageId}@gmail.com>`; // Fallback
+    const threadId = message.threadId;
+
+    const emailRegex = /<([^>]+)>/;
+    const fromMatch = fromHeader.match(emailRegex);
+    const fromEmail = fromMatch ? fromMatch[1] : fromHeader;
+
+    return {
+      fromEmail, // Sender of the original email (for "To" in reply)
+      subject, // Original subject
+      smtpMessageId, // RFC 2822 Message-ID
+      threadId, // Thread ID to link the draft
+    };
+  } catch (error) {
+    console.error(
+      "Error fetching email details:",
+      error.response ? error.response.data : error.message
+    );
+    throw error;
+  }
+}
+
+async function getOriginalSMTPMessageId(accessToken, gmailMessageId) {
+  const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${gmailMessageId}?format=full`;
+  const response = await axios.get(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  const headers = response.data.payload.headers || [];
+
+  const messageIdHeader = headers.find(
+    (header) => header.name.toLowerCase() === "message-id"
+  );
+
+  return messageIdHeader ? messageIdHeader.value : null;
+}
+
+async function getOriginalSubject(accessToken, messageId) {
+  const url = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}?format=metadata`;
+  const response = await axios.get(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  const headers = response.data.payload.headers;
+  const subjectHeader = headers.find((h) => h.name.toLowerCase() === "subject");
+
+  // Return the actual subject string if found
+  return subjectHeader ? subjectHeader.value : "";
+}
+
 async function getAccessTokenFromRefreshToken(storedRefreshToken) {
   const tokenEndpoint = "https://oauth2.googleapis.com/token";
 
@@ -511,36 +586,11 @@ async function createDraft(
   accessToken,
   threadId,
   messageDescription,
-  messageId,
-  toEmail
+  toEmail,
+  originalSMTPMessageId,
+  subject
 ) {
   const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
-
-  // Initialize Gmail API client to fetch original message details
-  const oauth2Client = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    "http://localhost:3000/oauth2callback"
-  );
-  oauth2Client.setCredentials({ access_token: accessToken });
-  const gmail = google.gmail({ version: "v1", auth: oauth2Client });
-
-  // Fetch the original message to get its headers
-  const messageResponse = await gmail.users.messages.get({
-    userId: "me",
-    id: messageId,
-    format: "full", // Need headers for Message-ID and Subject
-  });
-
-  const headers = messageResponse.data.payload.headers;
-  const originalMessageId =
-    headers.find((h) => h.name === "Message-ID")?.value ||
-    `<${messageId}@gmail.com>`; // Fallback
-  const originalSubject =
-    headers.find((h) => h.name === "Subject")?.value || "";
-  const replySubject = originalSubject.startsWith("Re:")
-    ? originalSubject
-    : `Re: ${originalSubject}`;
 
   // Create proper email MIME message
   const emailContent = [
@@ -548,9 +598,9 @@ async function createDraft(
     "MIME-Version: 1.0",
     "Content-Transfer-Encoding: 7bit",
     `To: ${toEmail}`,
-    `Subject: ${replySubject}`,
-    `In-Reply-To: ${originalMessageId}`,
-    `References: ${originalMessageId}`,
+    `Subject: Re: ${subject}`, // "Re:" prefix for replies
+    `In-Reply-To: ${originalSMTPMessageId}`,
+    `References: ${originalSMTPMessageId}`,
     "", // Empty line separates headers from body
     messageDescription,
   ].join("\r\n");
@@ -568,7 +618,7 @@ async function createDraft(
       {
         message: {
           raw: encodedMessage,
-          threadId: threadId, // Ensure this links to the original thread
+          threadId: threadId,
         },
       },
       {
@@ -578,9 +628,7 @@ async function createDraft(
         },
       }
     );
-    console.log(
-      `Draft created with ID: ${response.data.id}, Thread ID: ${response.data.message.threadId}`
-    );
+    console.log(`Draft created with ID: ${response.data.id}`);
     return response.data;
   } catch (error) {
     console.error(
@@ -954,7 +1002,56 @@ const resetProgress = () => {
   Gmailprogress = 0;
 };
 
-async function massDraft() {}
+async function massOutreachDraft(refreshToken, emails, extraContext, socket) {
+  let draftNumber = 1;
+  const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
+
+  for (let email of emails) {
+    socket.emit(
+      "status",
+      "drafting email for email" + draftNumber + "/" + emails.length
+    );
+
+    const prompt = `
+I want you to draft an email using the following instruction: ${extraContext}. The email should be of the same tone as the instruction. Respond with a JSON object containing two fields: "subject" (the email subject line) and "emailContent" (the body of the draft email). Ensure the response is formatted as valid JSON.
+`;
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        {
+          role: "system",
+          content: "You are an assistant that helps draft emails",
+        },
+        { role: "user", content: prompt },
+      ],
+      response_format: { type: "json_object" },
+    });
+
+    // Parse the JSON response
+    console.log("Completion:", completion.choices[0].message.content);
+
+    const response = JSON.parse(completion.choices[0].message.content);
+
+    const emailContent = response.emailContent;
+    const subject = response.subject;
+
+    await createDraft(
+      accessToken,
+      undefined,
+      emailContent,
+      email,
+      undefined,
+      subject
+    );
+
+    draftNumber++;
+  }
+
+  socket.emit("response", {
+    message: "Emails drafted successfully",
+  });
+}
 
 async function singleDraft(refreshToken, extraContext, emailId, socket) {
   const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
@@ -963,7 +1060,12 @@ async function singleDraft(refreshToken, extraContext, emailId, socket) {
   const emailContent = await getMessageDetails(accessToken, emailId);
 
   socket.emit("status", "consuming tokens");
-  const latestEmail = await getOriginalEmailDetails(accessToken, emailId);
+  const latestEmail = await getOriginalEmailDetails2(accessToken, emailId);
+  const originalSMTPMessageId = await getOriginalSMTPMessageId(
+    accessToken,
+    emailId
+  );
+  const subject = await getOriginalSubject(accessToken, emailId);
 
   const prompt = `Here is an email for which we need to draft a response: ${emailContent}. Please complete the email draft with a suitable response based on this extra context : ${extraContext}.  The response should be concise and should address the main points of the email. It should also be of the same tone as the original email. Only respond with the body of the draft email.`;
   // console.log("Promptt:", prompt);
@@ -978,13 +1080,17 @@ async function singleDraft(refreshToken, extraContext, emailId, socket) {
     ],
   });
   const draftedEmail = completion.choices[0].message.content;
+  console.log(latestEmail);
   await createDraft(
     accessToken,
     latestEmail.threadId,
     draftedEmail,
-    emailId,
-    latestEmail
+    latestEmail,
+    originalSMTPMessageId,
+    subject
   );
+
+  //async function createDraft(accessToken, threadId, messageDescription, toEmail, originalSMTPMessageId, subject) {
 
   socket.emit("response", {
     message: "I have drafted the email",
@@ -1030,7 +1136,7 @@ module.exports = {
   fetchLast50Emails,
   fetchProgress,
   resetProgress,
-  massDraft,
+  massOutreachDraft,
   singleDraft,
   relabel,
 };

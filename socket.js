@@ -2,7 +2,7 @@ const { config } = require("dotenv").config();
 const { retrieveFullEmail } = require("./RAGService");
 const { OpenAI } = require("openai");
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const { relabel, singleDraft } = require("./gmailService");
+const { relabel, singleDraft, massOutreachDraft } = require("./gmailService");
 
 const tools = [
   //   {
@@ -77,21 +77,25 @@ const tools = [
       },
     },
   },
-  //   {
-  //     type: "function",
-  //     function: {
-  //       name: "createMassOutreachDraft",
-  //       description: "Create a draft for mass outreach (no specific email)",
-  //       parameters: {
-  //         type: "object",
-  //         properties: {
-  //           accessToken: { type: "string", description: "User's access token" },
-  //           context: { type: "string", description: "Draft content" },
-  //         },
-  //         required: ["accessToken", "context"],
-  //       },
-  //     },
-  //   },
+  {
+    type: "function",
+    function: {
+      name: "createMassOutreachDraft",
+      description: "Create drafts for multiple emails",
+      parameters: {
+        type: "object",
+        properties: {
+          extraContext: { type: "string", description: "extra Draft content" },
+          emails: {
+            type: "array",
+            description: "email adresses",
+            items: { type: "string", description: "Individual email address" },
+          },
+        },
+        required: ["extraContext", "emails"],
+      },
+    },
+  },
 ];
 
 async function actionable(socket, userId, clientQuery, refreshToken) {
@@ -174,7 +178,36 @@ async function actionable(socket, userId, clientQuery, refreshToken) {
         }
 
         const email = fullEmails[emailIndex];
-        const confirmationMessage = `Do you want to perform the action on this email? \n\n ${email.content}`;
+        const formattedEmailContent = `
+### Email Details
+- **Labels**: ${
+          email.content.split("Labels:")[1]?.split("Subject:")[0]?.trim() ||
+          "N/A"
+        }
+- **Subject**: ${
+          email.content.split("Subject:")[1]?.split("From:")[0]?.trim() || "N/A"
+        }
+- **From**: ${email.content.split("From:")[1]?.split("To:")[0]?.trim() || "N/A"}
+- **To**: ${email.content.split("To:")[1]?.split("Date:")[0]?.trim() || "N/A"}
+- **Date**: ${
+          email.content.split("Date:")[1]?.split(" ")[0] +
+            " " +
+            email.content.split("Date:")[1]?.split(" ").slice(1, 5).join(" ") || // subject to change if does nto work //
+          "N/A"
+        }
+
+### Message
+${
+  email.content.split("Date:")[1]?.split(" ").slice(5).join(" ") ||
+  "No message body available"
+}
+  `.trim();
+
+        const confirmationMessage = `
+**Do you want to perform the action on this email?**
+
+${formattedEmailContent}
+  `.trim();
         socket.emit("status", "awaiting confirmation");
         socket.emit("confirmation", {
           message: confirmationMessage,
@@ -193,8 +226,24 @@ async function actionable(socket, userId, clientQuery, refreshToken) {
             socket.emit("response", {
               message: result,
             });
-          } else {
+          } else if (
+            response.toLowerCase() === "cancel" ||
+            response.toLowerCase() === "stop"
+          ) {
+            socket.emit("response", {
+              message: "Ok! I will cancel the action immediately.",
+            });
+            return;
+          } else if (
+            response.toLowerCase() === "next" ||
+            response.toLowerCase() === "no"
+          ) {
             emailIndex++;
+            askConfirmation();
+          } else {
+            socket.emit("response", {
+              message: "Please only respond with a Yes/No/Cancel",
+            });
             askConfirmation();
           }
         });
@@ -221,7 +270,6 @@ async function actionable(socket, userId, clientQuery, refreshToken) {
       refreshToken,
       socket
     );
-    socket.emit("response", { message: result.message, emailIds: [] });
   }
 }
 
@@ -236,6 +284,14 @@ async function executeFunction(functionName, args, refreshToken, socket) {
         refreshToken,
         args.extraContext,
         args.emailId,
+        socket
+      );
+
+    case "createMassOutreachDraft":
+      return massOutreachDraft(
+        refreshToken,
+        args.emails,
+        args.extraContext,
         socket
       );
     default:
