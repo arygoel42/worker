@@ -17,7 +17,7 @@ const { Server } = require("socket.io");
 const { setupSocket } = require("./socket.js");
 const server = http.createServer(app); // Create the HTTP server
 const io = new Server(server, {
-  cors: { origin: ["http://localhost:3000", "https://theinboxpilot.com"]}, // Adjust for your frontend
+  cors: { origin: "*" }, // Adjust for your frontend
 });
 app.use(compression());
 app.use(cors());
