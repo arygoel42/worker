@@ -454,7 +454,7 @@ async function setupSocket(io) {
           {
             role: "user",
             content:
-              "Please categorize the following query as either a question or a command. If it's a question, respond with 'question'. If it's a command, respond with 'command'.",
+              "Please categorize the following query as something that is a general query about the user's email, or is something that requires a action. If it's a general query, respond with 'question'. If it's a action item, respond with 'command'.",
           },
           { role: "user", content: clientQuery },
         ],
