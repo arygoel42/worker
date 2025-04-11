@@ -67,7 +67,7 @@ const tools = [
     type: "function",
     function: {
       name: "singleDraft",
-      description: "Create a draft for a specific email",
+      description: "Create a draft in response to a specific email",
       parameters: {
         type: "object",
         properties: {
