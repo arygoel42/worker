@@ -449,14 +449,30 @@ async function setupSocket(io) {
           {
             role: "system",
             content:
-              "You are an assistant that provides the user with details regarding their emails.",
+              "You are an assistant that classifies the user's query about their email inbox.",
           },
           {
             role: "user",
-            content:
-              "Please categorize the following query as something that is a general query about the user's email, or is something that requires a action. If it's a general query, respond with 'question'. If it's a action item, respond with 'command'.",
+            content: `
+      You will be given a query from a user about their email inbox. Your task is to classify the query into one of two categories:
+      
+      1. **question** – if the user is asking to *find*, *search*, *look up*, or *retrieve* emails or information. These are passive queries that do not modify the inbox in any way. Examples:
+         - "Can you find emails from John about the project?"
+         - "What were my most recent messages from Amazon?"
+         - "Do I have any unread emails about my flight?"
+      
+      2. **command** – if the user is asking to *take an action* on their inbox or an email, such as *label*, *archive*, *delete*, *reply*, *draft*, *mark as read/unread*, etc. These involve modifying or interacting with the inbox. Examples:
+         - "Delete all emails from LinkedIn"
+         - "Label the email from Bob as 'Important'"
+         - "Draft a reply to the last email from my professor"
+         - "Mark the flight confirmation email as unread"
+      
+      Your job is to respond with **only one word**: either **question** or **command**. Do not explain your reasoning.
+      
+      Now classify this query:
+      "${clientQuery}"
+      `,
           },
-          { role: "user", content: clientQuery },
         ],
       });
 
