@@ -81,7 +81,7 @@ const tools = [
     type: "function",
     function: {
       name: "createMassOutreachDraft",
-      description: "Create drafts for multiple emails",
+      description: "Create new outbound drafts for emails",
       parameters: {
         type: "object",
         properties: {
