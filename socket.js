@@ -138,11 +138,11 @@ async function actionable(socket, userId, clientQuery, refreshToken) {
 
       const extractContextPrompt = `The following is the user's query: "${clientQuery}".
 
-      Your Task is to extract the context part of the users query and return it. If the context is not found, return "None".
+      Your Task is to extract the part of the users query which can be used as context for a RAG query and return it. If the context is not found, return "None". The relevant context is the part of the query that can be used to find the email ID. The user's instructions for the content of the response is not relevant context.
 
       **Example:**
-      Input: "I want you to draft a response to the email from charlie regarding the team meeting."
-      Output: "team meeting regarding charlie"
+      Input: "I want you to draft a response to the email from charlie regarding the team meeting and tell him I cannot make it."
+      Output: "team meeting with charlie"
     `;
       const extractContextResponse = await openai.chat.completions.create({
         model: "gpt-4o",
@@ -341,14 +341,14 @@ async function query(socket, userId, clientQuery) {
     socket.emit("status", "generating response");
 
     const prompt = `
-You’re a friendly AI assistant here to help users dig up info from their emails with ease! I’ll keep my responses **sweet, and spot-on**, sticking strictly to the email context you provide—no making things up or pulling from outside sources.
+    You are an AI assistant tasked with finding information from a user's emails and answering their questions. Strictly base your responses on the content of provided emails. Do  not incorporate external knowledge or speculate beyond what is explicitly stated in the emails. Responses should be accurate, concise, and formatted in clear Markdown.
 
-**Date Smarts:**
+**Date Context:**
 - Today’s date is: ${currentDate} (format: YYYY-MM-DD).
-- For time references like "tomorrow," "next week," or "yesterday," I’ll use the **sent date** of the email as my guide, not today’s date. I’ll turn those into exact dates (YYYY-MM-DD) for clarity.
-- For example: If an email from 2025-03-01 mentions "meeting tomorrow," I’ll read that as 2025-03-02.
+- For time references like "tomorrow," "next week," or "yesterday," use the **sent date** of the email as the reference, not today’s date. Convert those into exact dates using the (YYYY-MM-DD) format for clarity.
+- For example: If an email from 2025-03-01 mentions "meeting tomorrow," interpret that meeting to be on 2025-03-02.
 
-**Here’s What I’m Working With:**
+**Emails for Input:**
 ${fullEmails
   .map(
     (email, index) =>
@@ -358,19 +358,20 @@ ${fullEmails
   )
   .join("\n\n")}
 
-**Your Question:** "${rewritten_query}"
+**User Question:** "${rewritten_query}"
 
-**How I’ll Help:**
-- I’ll base my answer **only** on the emails you’ve shared. If your question pulls from multiple emails, I’ll zero in on the most relevant ones and give you a quick heads-up on why I chose them.
-- For vague stuff (like "meeting next week"), I’ll lean on the latest relevant email unless you tell me otherwise—and I’ll let you know my pick!
-- If I can’t find a clear answer, I’ll say: "**Hmm, No Luck Here:** Looks like these emails don’t have quite enough to work with for this one."
-- No guessing or outside info here—just what’s in the emails, delivered with a smile!
-- I’ll toss in the IDs of the emails I used in the emailIds array.
+**Output Requirements:**
+- Base your answer **only** on the provided emails.
+- If multiple emails are relevant for the query, find the most relevant ones and summarize that information.
+- Don't regurgitate the email content; instead, provide a concise summary or answer based on the emails.
+- When interpreting vague references (like "meeting next week"), use the date-time of the emails given to find the best one.
+- If the answer cannot be determined from the emails, respond with - "**Hmm, No Luck Here:** Looks like these emails don’t have quite enough to work with for this one."
+- Include an array of the emailIds you used in forming your response.
 
 **How I’ll Respond:**
 Here’s the JSON format I’ll use:
 {
-  "response": "A friendly, markdown-formatted answer! I’ll use headers (##), lists (- or *), starts with a **bold** flourish or some *italic* flair to keep things clear and engaging—short, helpful, and never dull.",
+  "response": "A markdown-formatted answer with appropriate use of headers (##), bullet points, and minimal but clear emphasis (bold or italic) to ensure readability.",
   "emailIds": ["list", "of", "email", "IDs", "I", "leaned", "on"]
 }
 `;
@@ -456,18 +457,20 @@ async function setupSocket(io) {
             content: `
       You will be given a query from a user about their email inbox. Your task is to classify the query into one of two categories:
       
-      1. **question** – if the user is asking to *find*, *search*, *look up*, or *retrieve* emails or information. These are passive queries that do not modify the inbox in any way. Examples:
+      1. **search** – if the user is only asking to *search*, *look up*, or *retrieve* emails or information. These are passive queries that do not modify the inbox in any way. Examples:
          - "Can you find emails from John about the project?"
          - "What were my most recent messages from Amazon?"
          - "Do I have any unread emails about my flight?"
+         - "Find the email from my bank regarding the loan application"
       
-      2. **command** – if the user is asking to *take an action* on their inbox or an email, such as *label*, *archive*, *delete*, *reply*, *draft*, *mark as read/unread*, etc. These involve modifying or interacting with the inbox. Examples:
+      2. **action** – if the user is asking to *take an action* on their inbox or an email, such as *label*, *archive*, *delete*, *reply*, *draft*, *mark as read/unread*, etc. These involve modifying or interacting with the inbox. Examples:
          - "Delete all emails from LinkedIn"
          - "Label the email from Bob as 'Important'"
          - "Draft a reply to the last email from my professor"
          - "Mark the flight confirmation email as unread"
+         - "Can you find the email from my bank about the loan application and reply to it?"
       
-      Your job is to respond with **only one word**: either **question** or **command**. Do not explain your reasoning.
+      Your job is to respond with **only one word**: either **search** or **action**. Do not explain your reasoning.
       
       Now classify this query:
       "${clientQuery}"
@@ -480,11 +483,11 @@ async function setupSocket(io) {
 
       socket.emit("status", "classifying your query...");
 
-      if (classificationResponse === "question") {
+      if (classificationResponse === "search") {
         // Call the query function with socket, userId, and the client's query
         socket.emit("status", "lets start processing your query...");
         await query(socket, userId, clientQuery, refreshToken);
-      } else if (classificationResponse === "command") {
+      } else if (classificationResponse === "action") {
         // Call the command function with socket, userId, and the client's command
         socket.emit("status", "lets start processing your command...");
         await actionable(socket, userId, clientQuery, refreshToken);
