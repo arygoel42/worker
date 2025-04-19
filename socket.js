@@ -27,7 +27,8 @@ const tools = [
     type: "function",
     function: {
       name: "label",
-      description: "Add a label to a specific email. Use this when the user explicitly asks to label or organize an email.",
+      description:
+        "Add a label to a specific email. Use this when the user explicitly asks to label or organize an email.",
       parameters: {
         type: "object",
         properties: {
@@ -67,11 +68,15 @@ const tools = [
     type: "function",
     function: {
       name: "draftResponse",
-      description: "Create a draft in response to a specific email. Use this when the user wants to respond to an email or person with a message draft.",
+      description:
+        "Create a draft in response to a specific email. Use this when the user wants to respond to an email or person with a message draft.",
       parameters: {
         type: "object",
         properties: {
-          extraContext: { type: "string", description: "Instructions to follow for the draft" },
+          extraContext: {
+            type: "string",
+            description: "Instructions to follow for the draft",
+          },
         },
         required: ["extraContext"],
       },
@@ -81,7 +86,8 @@ const tools = [
     type: "function",
     function: {
       name: "createNewDrafts",
-      description: "Create new outbound drafts for emails. Use this when the user wants to create a new draft or new drafts to multiple recipients.",
+      description:
+        "Create new outbound drafts for emails. Use this when the user wants to create a new draft or new drafts to multiple recipients.",
       parameters: {
         type: "object",
         properties: {
@@ -98,7 +104,14 @@ const tools = [
   },
 ];
 
-async function actionable(socket, userId, clientQuery, refreshToken) {
+async function actionable(
+  socket,
+  userId,
+  clientQuery,
+  refreshToken,
+  user_profile
+) {
+  console.log("profile: " + user_profile);
   const accessToken = "some-access-token"; // Replace with actual token retrieval
 
   // Call OpenAI with function calling enabled
@@ -221,7 +234,8 @@ ${formattedEmailContent}
               functionName,
               args,
               refreshToken,
-              socket
+              socket,
+              user_profile
             );
             socket.emit("response", {
               message: result,
@@ -256,7 +270,8 @@ ${formattedEmailContent}
         functionName,
         args,
         refreshToken,
-        socket
+        socket,
+        user_profile
       );
       socket.emit("response", {
         message: result,
@@ -268,13 +283,20 @@ ${formattedEmailContent}
       functionName,
       args,
       refreshToken,
-      socket
+      socket,
+      user_profile
     );
   }
 }
 
 // Helper to execute the function based on name
-async function executeFunction(functionName, args, refreshToken, socket) {
+async function executeFunction(
+  functionName,
+  args,
+  refreshToken,
+  socket,
+  user_profile
+) {
   socket.emit("status", "performing action");
   switch (functionName) {
     case "label":
@@ -284,7 +306,8 @@ async function executeFunction(functionName, args, refreshToken, socket) {
         refreshToken,
         args.extraContext,
         args.emailId,
-        socket
+        socket,
+        user_profile
       );
 
     case "createNewDrafts":
@@ -292,7 +315,8 @@ async function executeFunction(functionName, args, refreshToken, socket) {
         refreshToken,
         args.emails,
         args.extraContext,
-        socket
+        socket,
+        user_profile
       );
     default:
       throw new Error("Unknown function");
@@ -301,7 +325,8 @@ async function executeFunction(functionName, args, refreshToken, socket) {
 
 // Updated setupSocket to use the new classification
 
-async function query(socket, userId, clientQuery) {
+async function query(socket, userId, clientQuery, user_profile) {
+  console.log(user_profile + " HEELLO");
   socket.emit("status", "classifying emails");
 
   try {
@@ -358,6 +383,8 @@ ${fullEmails
   )
   .join("\n\n")}
 
+  This is the users profile: ${user_profile}, 
+
 **User Question:** "${rewritten_query}"
 
 **Output Requirements:**
@@ -407,6 +434,7 @@ async function setupSocket(io) {
   io.on("connection", (socket) => {
     const userId = socket.handshake.query.userId;
     const refreshToken = socket.handshake.query.refreshToken;
+    const user_profile = socket.handshake.query.user_profile;
 
     if (!userId) {
       socket.emit("error", "Missing userId");
@@ -415,6 +443,8 @@ async function setupSocket(io) {
     }
 
     console.log(`A user connected with userId: ${userId}`);
+    console.log(`A user connected with refreshToken: ${refreshToken}`);
+    console.log(`A user connected with user_profile: ${user_profile}`);
 
     let emailQueue = [];
     let currentQuery = null;
@@ -486,11 +516,18 @@ async function setupSocket(io) {
       if (classificationResponse === "search") {
         // Call the query function with socket, userId, and the client's query
         socket.emit("status", "lets start processing your query...");
-        await query(socket, userId, clientQuery, refreshToken);
+        console.log(user_profile);
+        await query(socket, userId, clientQuery, user_profile);
       } else if (classificationResponse === "action") {
         // Call the command function with socket, userId, and the client's command
         socket.emit("status", "lets start processing your command...");
-        await actionable(socket, userId, clientQuery, refreshToken);
+        await actionable(
+          socket,
+          userId,
+          clientQuery,
+          refreshToken,
+          user_profile
+        );
       }
     });
   });

@@ -1002,7 +1002,13 @@ const resetProgress = () => {
   Gmailprogress = 0;
 };
 
-async function massOutreachDraft(refreshToken, emails, extraContext, socket) {
+async function massOutreachDraft(
+  refreshToken,
+  emails,
+  extraContext,
+  socket,
+  user_profile
+) {
   let draftNumber = 1;
   const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
 
@@ -1013,7 +1019,7 @@ async function massOutreachDraft(refreshToken, emails, extraContext, socket) {
     );
 
     const prompt = `
-I want you to draft an email using the following instruction: ${extraContext}. The email should be of the same tone as the instruction. Respond with a JSON object containing two fields: "subject" (the email subject line) and "emailContent" (the body of the draft email). Ensure the response is formatted as valid JSON.
+I want you to draft an email using the following instruction: ${extraContext}. Use the Users profile as additional context: ${user_profile}. The email should be of the same tone as the instruction. Respond with a JSON object containing two fields: "subject" (the email subject line) and "emailContent" (the body of the draft email). Ensure the response is formatted as valid JSON.
 `;
 
     const completion = await openai.chat.completions.create({
@@ -1053,7 +1059,13 @@ I want you to draft an email using the following instruction: ${extraContext}. T
   });
 }
 
-async function singleDraft(refreshToken, extraContext, emailId, socket) {
+async function singleDraft(
+  refreshToken,
+  extraContext,
+  emailId,
+  socket,
+  user_profile
+) {
   const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
 
   socket.emit("status", "fetching email content");
@@ -1067,7 +1079,7 @@ async function singleDraft(refreshToken, extraContext, emailId, socket) {
   );
   const subject = await getOriginalSubject(accessToken, emailId);
 
-  const prompt = `Here is an email for which we need to draft a response: ${emailContent}. Please complete the email draft with a suitable response based on this extra context : ${extraContext}.  The response should be concise and should address the main points of the email. It should also be of the same tone as the original email. Only respond with the body of the draft email.`;
+  const prompt = `Here is an email for which we need to draft a response: ${emailContent}. Use additonal context from user profile: ${user_profile}. Please complete the email draft with a suitable response based on this extra context : ${extraContext}.  The response should be concise and should address the main points of the email. It should also be of the same tone as the original email. Only respond with the body of the draft email.`;
   // console.log("Promptt:", prompt);
   const completion = await openai.chat.completions.create({
     model: "gpt-4o",
