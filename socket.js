@@ -27,7 +27,7 @@ const tools = [
     type: "function",
     function: {
       name: "label",
-      description: "Add a label to a specific email",
+      description: "Add a label to a specific email. Use this when the user explicitly asks to label or organize an email.",
       parameters: {
         type: "object",
         properties: {
@@ -66,12 +66,12 @@ const tools = [
   {
     type: "function",
     function: {
-      name: "singleDraft",
-      description: "Create a draft in response to a specific email",
+      name: "draftResponse",
+      description: "Create a draft in response to a specific email. Use this when the user wants to respond to an email or person with a message draft.",
       parameters: {
         type: "object",
         properties: {
-          extraContext: { type: "string", description: "extra Draft content" },
+          extraContext: { type: "string", description: "Instructions to follow for the draft" },
         },
         required: ["extraContext"],
       },
@@ -80,8 +80,8 @@ const tools = [
   {
     type: "function",
     function: {
-      name: "createMassOutreachDraft",
-      description: "Create new outbound drafts for emails",
+      name: "createNewDrafts",
+      description: "Create new outbound drafts for emails. Use this when the user wants to create a new draft or new drafts to multiple recipients.",
       parameters: {
         type: "object",
         properties: {
@@ -127,7 +127,7 @@ async function actionable(socket, userId, clientQuery, refreshToken) {
     "archiveEmails",
     "label",
     "forwardEmails",
-    "singleDraft",
+    "draftResponse",
   ].includes(functionName);
 
   if (requiresEmailId) {
@@ -279,7 +279,7 @@ async function executeFunction(functionName, args, refreshToken, socket) {
   switch (functionName) {
     case "label":
       return await relabel(refreshToken, args.emailId, args.labelName, socket);
-    case "singleDraft":
+    case "draftResponse":
       return await singleDraft(
         refreshToken,
         args.extraContext,
@@ -287,7 +287,7 @@ async function executeFunction(functionName, args, refreshToken, socket) {
         socket
       );
 
-    case "createMassOutreachDraft":
+    case "createNewDrafts":
       return massOutreachDraft(
         refreshToken,
         args.emails,
