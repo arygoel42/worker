@@ -5,6 +5,8 @@ const agent = new https.Agent({ rejectUnauthorized: false });
 const { google } = require("googleapis");
 const { htmlToText } = require("html-to-text");
 const { OpenAI } = require("openai");
+const { raw } = require("express");
+const { throwDeprecation } = require("process");
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 async function getOriginalEmailDetails2(accessToken, messageId) {
@@ -582,6 +584,74 @@ async function favoriteEmail(accessToken, messageId) {
 //   }
 // }
 
+// async function createDraft(
+//   accessToken,
+//   threadId,
+//   messageDescription,
+//   toEmail,
+//   originalSMTPMessageId,
+//   subject
+// ) {
+//   const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
+
+//   // Create proper email MIME message
+//   const emailContent = [
+//     'Content-Type: text/plain; charset="UTF-8"',
+//     "MIME-Version: 1.0",
+//     "Content-Transfer-Encoding: 7bit",
+//     `To: ${toEmail}`,
+//     `Subject: Re: ${subject}`, // "Re:" prefix for replies
+//     `In-Reply-To: ${originalSMTPMessageId}`,
+//     `References: ${originalSMTPMessageId}`,
+//     "", // Empty line separates headers from body
+//     messageDescription,
+//   ].filter(Boolean).join("\r\n");
+
+//   // Encode the email
+//   const encodedMessage = Buffer.from(emailContent)
+//     .toString("base64")
+//     .replace(/\+/g, "-")
+//     .replace(/\//g, "_")
+//     .replace(/=+$/, "");
+
+//     const messagePayload = {
+//       message: {
+//         raw: encodedMessage,
+//       }
+//     };
+
+//     if (threadId) {
+//       messagePayload.message.threadId = threadId;
+//     }
+
+//   try {
+//     const response = await axios.post(
+//       draftEndpoint,
+//       {
+//         message: {
+//           raw: encodedMessage,
+//           threadId: threadId,
+//         },
+//       },
+//       {
+//         headers: {
+//           Authorization: `Bearer ${accessToken}`,
+//           "Content-Type": "application/json",
+//         },
+//       }
+//     );
+//     console.log(`Draft created with ID: ${response.data.id}`);
+
+//     return response.data;
+//   } catch (error) {
+//     console.error(
+//       "Error creating draft email:",
+//       error.response ? error.response.data : error.message
+//     );
+//     throw error;
+//   }
+// }
+
 async function createDraft(
   accessToken,
   threadId,
@@ -592,44 +662,50 @@ async function createDraft(
 ) {
   const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
 
-  // Create proper email MIME message
   const emailContent = [
     'Content-Type: text/plain; charset="UTF-8"',
     "MIME-Version: 1.0",
     "Content-Transfer-Encoding: 7bit",
     `To: ${toEmail}`,
-    `Subject: Re: ${subject}`, // "Re:" prefix for replies
-    `In-Reply-To: ${originalSMTPMessageId}`,
-    `References: ${originalSMTPMessageId}`,
-    "", // Empty line separates headers from body
+    `Subject: Re: ${subject}`,
+    originalSMTPMessageId ? `In-Reply-To: ${originalSMTPMessageId}` : "",
+    originalSMTPMessageId ? `References: ${originalSMTPMessageId}` : "",
+    "",
     messageDescription,
-  ].join("\r\n");
+  ]
+    .filter(Boolean) // remove empty lines due to undefined headers
+    .join("\r\n");
 
-  // Encode the email
   const encodedMessage = Buffer.from(emailContent)
     .toString("base64")
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 
+  const messagePayload = {
+    message: {
+      raw: encodedMessage,
+    },
+  };
+
+  if (threadId) {
+    messagePayload.message.threadId = threadId;
+  }
+
   try {
-    const response = await axios.post(
-      draftEndpoint,
-      {
-        message: {
-          raw: encodedMessage,
-          threadId: threadId,
-        },
+    const response = await axios.post(draftEndpoint, messagePayload, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
       },
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    });
+
     console.log(`Draft created with ID: ${response.data.id}`);
-    return response.data;
+    console.log(`Draft created with message ID: ${response.data.message.id}`)
+    return {
+      draftId: response.data.id,
+      messageId: response.data.message.id, // email id you're asking for
+    };
   } catch (error) {
     console.error(
       "Error creating draft email:",
@@ -638,6 +714,7 @@ async function createDraft(
     throw error;
   }
 }
+
 async function getOriginalEmailDetails(accessToken, messageId) {
   const emailEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`;
 
@@ -1012,6 +1089,9 @@ async function massOutreachDraft(
   let draftNumber = 1;
   const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
 
+  const draftedMessageIds = [] // Store all messageIds
+  let draftResponse;
+
   for (let email of emails) {
     socket.emit(
       "status",
@@ -1042,7 +1122,7 @@ I want you to draft an email using the following instruction: ${extraContext}. U
     const emailContent = response.emailContent;
     const subject = response.subject;
 
-    await createDraft(
+    draftResponse = await createDraft(
       accessToken,
       undefined,
       emailContent,
@@ -1051,11 +1131,14 @@ I want you to draft an email using the following instruction: ${extraContext}. U
       subject
     );
 
+    console.log(draftResponse.messageId);
+
     draftNumber++;
   }
 
   socket.emit("response", {
     message: "Emails drafted successfully",
+    emailIds: draftResponse.messageId,
   });
 }
 
@@ -1106,7 +1189,7 @@ async function singleDraft(
 
   socket.emit("response", {
     message: "I have drafted the email",
-    emailId: emailId,
+    emailIds: emailId,
   });
 
   console.log("drafted");
