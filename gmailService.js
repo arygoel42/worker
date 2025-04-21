@@ -658,7 +658,8 @@ async function createDraft(
   messageDescription,
   toEmail,
   originalSMTPMessageId,
-  subject
+  subject,
+  bool
 ) {
   const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
 
@@ -666,7 +667,7 @@ async function createDraft(
     'Content-Type: text/plain; charset="UTF-8"',
     "MIME-Version: 1.0",
     "Content-Transfer-Encoding: 7bit",
-    `To: ${toEmail.fromEmail}`,
+    `To: ${bool ? toEmail : toEmail.fromEmail}`,
     `Subject: Re: ${subject}`,
     originalSMTPMessageId ? `In-Reply-To: ${originalSMTPMessageId}` : "",
     originalSMTPMessageId ? `References: ${originalSMTPMessageId}` : "",
@@ -1086,6 +1087,7 @@ async function massOutreachDraft(
   socket,
   user_profile
 ) {
+  const bool = true;
   let draftNumber = 1;
   const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
 
@@ -1128,17 +1130,20 @@ I want you to draft an email using the following instruction: ${extraContext}. U
       emailContent,
       email,
       undefined,
-      subject
+      subject,
+      bool
     );
 
     console.log(draftResponse.messageId);
+
+    draftedMessageIds.push(draftResponse.messageId);
 
     draftNumber++;
   }
 
   socket.emit("response", {
     message: "Emails drafted successfully",
-    emailIds: draftResponse.messageId,
+    emailIds: draftedMessageIds,
   });
 }
 
@@ -1176,7 +1181,7 @@ async function singleDraft(
   });
   const draftedEmail = completion.choices[0].message.content;
   console.log(latestEmail);
-  await createDraft(
+  let email_id = await createDraft(
     accessToken,
     latestEmail.threadId,
     draftedEmail,
@@ -1189,7 +1194,7 @@ async function singleDraft(
 
   socket.emit("response", {
     message: "I have drafted the email",
-    emailIds: emailId,
+    emailIds: email_id.draftId,
   });
 
   console.log("drafted");
