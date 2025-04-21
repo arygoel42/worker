@@ -1194,7 +1194,7 @@ async function singleDraft(
 
   socket.emit("response", {
     message: "I have drafted the email",
-    emailIds: email_id.draftId,
+    emailIds: email_id.messageId,
   });
 
   console.log("drafted");
