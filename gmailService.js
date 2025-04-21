@@ -666,30 +666,16 @@ async function createDraft(
     'Content-Type: text/plain; charset="UTF-8"',
     "MIME-Version: 1.0",
     "Content-Transfer-Encoding: 7bit",
-<<<<<<< Updated upstream
-    `To: ${toEmail}`,
+    `To: ${toEmail.fromEmail}`,
     `Subject: Re: ${subject}`,
     originalSMTPMessageId ? `In-Reply-To: ${originalSMTPMessageId}` : "",
     originalSMTPMessageId ? `References: ${originalSMTPMessageId}` : "",
     "",
-=======
-    `To: ${toEmail.fromEmail}`,
-    `Subject: Re: ${subject}`, // "Re:" prefix for replies
-    `In-Reply-To: ${originalSMTPMessageId}`,
-    `References: ${originalSMTPMessageId}`,
-    "", // Empty line separates headers from body
->>>>>>> Stashed changes
     messageDescription,
   ]
     .filter(Boolean) // remove empty lines due to undefined headers
     .join("\r\n");
 
-<<<<<<< Updated upstream
-=======
-  console.log("toEmailss:", toEmail);
-
-  // Encode the email
->>>>>>> Stashed changes
   const encodedMessage = Buffer.from(emailContent)
     .toString("base64")
     .replace(/\+/g, "-")
@@ -715,7 +701,7 @@ async function createDraft(
     });
 
     console.log(`Draft created with ID: ${response.data.id}`);
-    console.log(`Draft created with message ID: ${response.data.message.id}`)
+    console.log(`Draft created with message ID: ${response.data.message.id}`);
     return {
       draftId: response.data.id,
       messageId: response.data.message.id, // email id you're asking for
@@ -1103,7 +1089,7 @@ async function massOutreachDraft(
   let draftNumber = 1;
   const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
 
-  const draftedMessageIds = [] // Store all messageIds
+  const draftedMessageIds = []; // Store all messageIds
   let draftResponse;
 
   for (let email of emails) {
