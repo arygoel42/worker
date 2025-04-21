@@ -666,16 +666,30 @@ async function createDraft(
     'Content-Type: text/plain; charset="UTF-8"',
     "MIME-Version: 1.0",
     "Content-Transfer-Encoding: 7bit",
+<<<<<<< Updated upstream
     `To: ${toEmail}`,
     `Subject: Re: ${subject}`,
     originalSMTPMessageId ? `In-Reply-To: ${originalSMTPMessageId}` : "",
     originalSMTPMessageId ? `References: ${originalSMTPMessageId}` : "",
     "",
+=======
+    `To: ${toEmail.fromEmail}`,
+    `Subject: Re: ${subject}`, // "Re:" prefix for replies
+    `In-Reply-To: ${originalSMTPMessageId}`,
+    `References: ${originalSMTPMessageId}`,
+    "", // Empty line separates headers from body
+>>>>>>> Stashed changes
     messageDescription,
   ]
     .filter(Boolean) // remove empty lines due to undefined headers
     .join("\r\n");
 
+<<<<<<< Updated upstream
+=======
+  console.log("toEmailss:", toEmail);
+
+  // Encode the email
+>>>>>>> Stashed changes
   const encodedMessage = Buffer.from(emailContent)
     .toString("base64")
     .replace(/\+/g, "-")
