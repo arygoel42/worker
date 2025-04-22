@@ -473,6 +473,8 @@ async function setupSocket(io) {
         return;
       }
 
+      socket.emit("RAGQUERY");
+
       // use open ai call to classify user query:
       const classification = await openai.chat.completions.create({
         model: "gpt-4o",
