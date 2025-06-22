@@ -353,10 +353,8 @@ async function retrieveFullEmail(
     .sort((a, b) => b[1] - a[1]) // Sort by score (descending)
     .slice(0, maxEmails); // Keep only the top 30
 
-  let fullEmails = [];
-
-  // Step 5: Retrieve chunks for each email, up to the 30-email limit
-  for (const [emailId, score] of sortedEmails) {
+  // Step 5: Retrieve chunks for all emails in parallel (OPTIMIZED)
+  const chunkPromises = sortedEmails.map(async ([emailId, score]) => {
     const emailChunks = await index.query({
       vector: Array(1536).fill(0), // Dummy vector to retrieve all chunks
       topK: 100,
@@ -371,7 +369,7 @@ async function retrieveFullEmail(
 
     if (sortedChunks.length === 0) {
       console.error("No chunks found for email:", emailId);
-      continue;
+      return null;
     }
 
     // Reconstruct full email
@@ -379,11 +377,13 @@ async function retrieveFullEmail(
       .map((chunk) => chunk.metadata.content)
       .join("\n");
 
-    fullEmails.push({ emailId, score, content: fullEmail });
+    return { emailId, score, content: fullEmail };
+  });
 
-    // Stop early if we hit the limit (redundant but safe)
-    if (fullEmails.length >= maxEmails) break;
-  }
+  // Wait for all chunk retrievals to complete
+  const fullEmails = (await Promise.all(chunkPromises)).filter(
+    (email) => email !== null
+  );
 
   return fullEmails;
 }
