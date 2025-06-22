@@ -330,21 +330,21 @@ async function query(socket, userId, clientQuery, user_profile) {
   socket.emit("status", "classifying emails");
 
   try {
-    const rewrite_prompt = `The following is the user's query: "${clientQuery}". 
+    // const rewrite_prompt = `The following is the user's query: "${clientQuery}".
 
-    Your task is to rewrite the query to ensure it works optimally with my RAG (Retrieval-Augmented Generation) system. The RAG system uses a retrieval process to find the most relevant emails from the user's inbox, and then a generation model is applied to answer the user's query based on those emails.
-    
-    Please rewrite the query so that it is clear, concise, and properly structured for the RAG system to retrieve the most relevant emails and generate the best response. Keep the same tone and style as the original query, but ensure it works effectively with the system's capabilities.
-    
-    Only return the rewritten query, and ensure it is optimized for retrieving and generating information accurately from the user's emails.`;
+    // Your task is to rewrite the query to ensure it works optimally with my RAG (Retrieval-Augmented Generation) system. The RAG system uses a retrieval process to find the most relevant emails from the user's inbox, and then a generation model is applied to answer the user's query based on those emails.
 
-    const rewrite_response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: rewrite_prompt }],
-    });
+    // Please rewrite the query so that it is clear, concise, and properly structured for the RAG system to retrieve the most relevant emails and generate the best response. Keep the same tone and style as the original query, but ensure it works effectively with the system's capabilities.
+
+    // Only return the rewritten query, and ensure it is optimized for retrieving and generating information accurately from the user's emails.`;
+
+    // const rewrite_response = await openai.chat.completions.create({
+    //   model: "gpt-4o-mini",
+    //   messages: [{ role: "user", content: rewrite_prompt }],
+    // });
 
     // Extract the rewritten query
-    const rewritten_query = rewrite_response.choices[0].message.content.trim();
+    const rewritten_query = clientQuery;
 
     console.log("Rewritten Query:", rewritten_query);
 
@@ -405,25 +405,100 @@ Here’s the JSON format I’ll use:
 
     console.log("Prompt:", prompt);
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are an assistant that provides the user with details regarding their emails.",
-        },
-        { role: "user", content: prompt },
-      ],
-      response_format: { type: "json_object" },
-    });
+    // STREAMING IMPLEMENTATION - Stream response in real-time for better UX
+    console.log("🚀 Starting RAG response streaming...");
+    socket.emit("stream_start"); // Signal client that streaming is starting
 
-    const result = completion.choices[0].message.content;
-    const jsonResult = JSON.parse(result);
+    let fullResponse = "";
+    let emailIds = [];
 
-    console.log("Result:", jsonResult);
+    try {
+      const stream = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are an assistant that provides the user with details regarding their emails.",
+          },
+          { role: "user", content: prompt },
+        ],
+        response_format: { type: "json_object" },
+        stream: true, // Enable streaming
+      });
 
-    socket.emit("response", jsonResult);
+      for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content || "";
+        if (content) {
+          fullResponse += content;
+          // Log each chunk as it comes in
+          console.log("📦 Streaming chunk:", content);
+          // Stream each chunk to the client immediately
+          socket.emit("stream_chunk", { chunk: content });
+        }
+      }
+
+      // Parse the complete response to extract emailIds
+      try {
+        console.log("🔍 Full RAG response received:");
+        console.log("=".repeat(80));
+        console.log(fullResponse);
+        console.log("=".repeat(80));
+
+        const jsonResult = JSON.parse(fullResponse);
+        emailIds = jsonResult.emailIds || [];
+
+        console.log("📧 Parsed response content:", jsonResult.response);
+        console.log("🔗 Email IDs used:", emailIds);
+
+        // Send final response with metadata
+        socket.emit("stream_complete", {
+          fullResponse: jsonResult.response,
+          emailIds: emailIds,
+        });
+
+        console.log("✅ Streaming complete. EmailIds:", emailIds);
+      } catch (parseError) {
+        console.error("❌ Failed to parse streamed JSON:", parseError);
+        console.log("🔍 Raw response that failed to parse:");
+        console.log("=".repeat(80));
+        console.log(fullResponse);
+        console.log("=".repeat(80));
+        // Send the raw response if JSON parsing fails
+        socket.emit("stream_complete", {
+          fullResponse: fullResponse,
+          emailIds: [],
+        });
+      }
+    } catch (streamError) {
+      console.error("❌ Streaming failed:", streamError);
+      console.log("🔄 Falling back to non-streaming mode...");
+      // Fallback to non-streaming if streaming fails
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are an assistant that provides the user with details regarding their emails.",
+          },
+          { role: "user", content: prompt },
+        ],
+        response_format: { type: "json_object" },
+      });
+
+      const result = completion.choices[0].message.content;
+      const jsonResult = JSON.parse(result);
+
+      console.log("🔍 Fallback RAG response:");
+      console.log("=".repeat(80));
+      console.log(result);
+      console.log("=".repeat(80));
+      console.log("📧 Fallback parsed content:", jsonResult.response);
+      console.log("🔗 Fallback email IDs:", jsonResult.emailIds);
+
+      socket.emit("response", jsonResult);
+    }
   } catch (error) {
     socket.emit("error", error.message);
   }

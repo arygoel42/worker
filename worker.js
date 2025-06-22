@@ -2,6 +2,7 @@ const Bull = require("bull");
 const express = require("express");
 const app = express();
 const cors = require("cors");
+const { analyzeAndSaveUserStyle } = require("./styleAnalysis.js");
 const {
   saveEmailChunks,
   retrieveFullEmail,
@@ -254,6 +255,31 @@ taskQueue.process("disableRAG", 5, async (job, done) => {
         total: -1,
       });
     }
+    activeJobs.delete(job.id);
+    done(error);
+  }
+});
+
+taskQueue.process("styleAnalysis", async (job, done) => {
+  console.log(`Processing styleAnalysis task for user ${job.data.userId}...`);
+
+  // Check if shutting down before starting
+  if (isShuttingDown) {
+    return done(new Error("Server is shutting down"));
+  }
+
+  // Set job as active
+  activeJobs.set(job.id, { type: "styleAnalysis", userId: job.data.userId });
+
+  try {
+    const { userId, emails } = job.data;
+    await analyzeAndSaveUserStyle(userId, emails);
+
+    // Remove from active jobs and mark as done
+    activeJobs.delete(job.id);
+    done(null, { status: "success", userId });
+  } catch (error) {
+    // Remove from active jobs on error
     activeJobs.delete(job.id);
     done(error);
   }
