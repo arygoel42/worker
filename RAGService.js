@@ -324,16 +324,24 @@ async function retrieveFullEmail(
   similarityThreshold = 0.4,
   maxEmails = 30
 ) {
+  const searchStartTime = Date.now();
+
   // Step 1: Convert query into embedding
+  const embeddingStartTime = Date.now();
   const queryEmbedding = await getRateLimitedEmbedding(query);
+  const embeddingDuration = Date.now() - embeddingStartTime;
+  console.log(`[SEARCH] Embedding generation: ${embeddingDuration}ms`);
 
   // Step 2: Retrieve a large number of potential matches
+  const vectorSearchStartTime = Date.now();
   const results = await index.query({
     vector: queryEmbedding,
     topK: 1000, // High value to retrieve as many matches as possible
     includeMetadata: true,
     filter: { user_id: userId }, // Only get emails for this user
   });
+  const vectorSearchDuration = Date.now() - vectorSearchStartTime;
+  console.log(`[SEARCH] Vector similarity search: ${vectorSearchDuration}ms`);
 
   // Step 3: Filter out emails below the similarity threshold
   let emailIdRelevanceMap = new Map();
@@ -354,6 +362,7 @@ async function retrieveFullEmail(
     .slice(0, maxEmails); // Keep only the top 30
 
   // Step 5: Retrieve chunks for all emails in parallel (OPTIMIZED)
+  const chunkRetrievalStartTime = Date.now();
   const chunkPromises = sortedEmails.map(async ([emailId, score]) => {
     const emailChunks = await index.query({
       vector: Array(1536).fill(0), // Dummy vector to retrieve all chunks
@@ -384,8 +393,20 @@ async function retrieveFullEmail(
   const fullEmails = (await Promise.all(chunkPromises)).filter(
     (email) => email !== null
   );
+  const chunkRetrievalDuration = Date.now() - chunkRetrievalStartTime;
+  const totalSearchDuration = Date.now() - searchStartTime;
 
-  return fullEmails;
+  // Return emails with timing data
+  return {
+    emails: fullEmails,
+    searchTiming: {
+      embedding: embeddingDuration,
+      vectorSearch: vectorSearchDuration,
+      chunkRetrieval: chunkRetrievalDuration,
+      total: totalSearchDuration,
+      emailCount: sortedEmails.length,
+    },
+  };
 }
 
 async function deleteEmails(userId) {

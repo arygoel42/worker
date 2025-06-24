@@ -326,6 +326,17 @@ async function executeFunction(
 // Updated setupSocket to use the new classification
 
 async function query(socket, userId, clientQuery, user_profile) {
+  // Basic performance logging
+  const startTime = Date.now();
+  const logPerformance = (step, stepStartTime = Date.now()) => {
+    const stepDuration = Date.now() - stepStartTime;
+    const totalDuration = Date.now() - startTime;
+    console.log(
+      `[PERF] ${step}: ${stepDuration}ms | Total: ${totalDuration}ms`
+    );
+    return Date.now(); // Return current time for next step
+  };
+
   console.log(user_profile + " HEELLO");
   socket.emit("status", "classifying emails");
 
@@ -349,8 +360,23 @@ async function query(socket, userId, clientQuery, user_profile) {
     console.log("Rewritten Query:", rewritten_query);
 
     socket.emit("status", "searching emails");
+    const retrievalStartTime = Date.now();
 
-    const fullEmails = await retrieveFullEmail(userId, rewritten_query);
+    const searchResult = await retrieveFullEmail(userId, rewritten_query);
+    const retrievalDuration = Date.now() - retrievalStartTime;
+
+    const fullEmails = searchResult.emails;
+    const searchTiming = searchResult.searchTiming;
+
+    // Log detailed breakdown with search timing
+    console.log(
+      `[PERF] Email Retrieval: ${retrievalDuration}ms | Total: ${
+        Date.now() - startTime
+      }ms`
+    );
+    console.log(
+      `[PERF] Search Breakdown - Embedding: ${searchTiming.embedding}ms | Vector: ${searchTiming.vectorSearch}ms | Chunks: ${searchTiming.chunkRetrieval}ms | Total: ${searchTiming.total}ms`
+    );
 
     if (!fullEmails || fullEmails.length === 0) {
       const noResult = {
@@ -364,6 +390,7 @@ async function query(socket, userId, clientQuery, user_profile) {
     const currentDate = new Date().toISOString().split("T")[0];
 
     socket.emit("status", "generating response");
+    const responseStartTime = Date.now();
 
     const prompt = `
     You are an AI assistant tasked with finding information from a user's emails and answering their questions. Strictly base your responses on the content of provided emails. Do  not incorporate external knowledge or speculate beyond what is explicitly stated in the emails. Responses should be accurate, concise, and formatted in clear Markdown.
@@ -458,6 +485,15 @@ Here’s the JSON format I’ll use:
         });
 
         console.log("✅ Streaming complete. EmailIds:", emailIds);
+        console.log(
+          `[PERF] Response Generation: ${
+            Date.now() - responseStartTime
+          }ms | Total: ${Date.now() - startTime}ms`
+        );
+        console.log(
+          `[PERF] Search Timing - Embedding: ${searchTiming.embedding}ms | Vector: ${searchTiming.vectorSearch}ms | Chunks: ${searchTiming.chunkRetrieval}ms | Search Total: ${searchTiming.total}ms`
+        );
+        console.log(`[PERF] Total Query Time: ${Date.now() - startTime}ms`);
       } catch (parseError) {
         console.error("❌ Failed to parse streamed JSON:", parseError);
         console.log("🔍 Raw response that failed to parse:");
@@ -497,6 +533,15 @@ Here’s the JSON format I’ll use:
       console.log("📧 Fallback parsed content:", jsonResult.response);
       console.log("🔗 Fallback email IDs:", jsonResult.emailIds);
 
+      console.log(
+        `[PERF] Fallback Response Generation: ${
+          Date.now() - responseStartTime
+        }ms | Total: ${Date.now() - startTime}ms`
+      );
+      console.log(
+        `[PERF] Search Timing - Embedding: ${searchTiming.embedding}ms | Vector: ${searchTiming.vectorSearch}ms | Chunks: ${searchTiming.chunkRetrieval}ms | Search Total: ${searchTiming.total}ms`
+      );
+      console.log(`[PERF] Total Query Time: ${Date.now() - startTime}ms`);
       socket.emit("response", jsonResult);
     }
   } catch (error) {
