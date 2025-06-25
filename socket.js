@@ -4,6 +4,125 @@ const { OpenAI } = require("openai");
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const { relabel, singleDraft, massOutreachDraft } = require("./gmailService");
 
+// ====== CONVERSATION STORAGE ======
+// In-memory storage for conversations per socket connection
+const conversations = new Map(); // socketId -> conversation history
+
+// Add message to conversation history
+function addToConversation(socketId, message, sender = "user") {
+  if (!conversations.has(socketId)) {
+    conversations.set(socketId, []);
+  }
+
+  const conversation = conversations.get(socketId);
+  conversation.push({
+    message: message,
+    sender: sender, // 'user' or 'assistant'
+    timestamp: new Date().toISOString(),
+  });
+
+  // Keep only last 20 messages to prevent memory overflow
+  if (conversation.length > 20) {
+    conversation.splice(0, conversation.length - 20);
+  }
+}
+
+// Get conversation history for a socket
+function getConversationHistory(socketId) {
+  return conversations.get(socketId) || [];
+}
+
+// Clear conversation history for a socket
+function clearConversation(socketId) {
+  conversations.delete(socketId);
+}
+
+// Debug function to get conversation stats
+function getConversationStats() {
+  const stats = {
+    totalConversations: conversations.size,
+    conversationLengths: [],
+  };
+
+  conversations.forEach((conversation, socketId) => {
+    stats.conversationLengths.push({
+      socketId: socketId,
+      messageCount: conversation.length,
+    });
+  });
+
+  return stats;
+}
+
+// ====== CONTEXT-AWARE QUERY ENHANCEMENT ======
+async function enhanceQueryWithContext(clientQuery, socketId) {
+  const conversationHistory = getConversationHistory(socketId);
+
+  // If no conversation history, return original query
+  if (conversationHistory.length === 0) {
+    return {
+      enhancedQuery: clientQuery,
+      contextUsed: false,
+      reasoning: "No conversation history available",
+    };
+  }
+
+  // Build context from recent conversation
+  const recentContext = conversationHistory
+    .slice(-10) // Last 10 messages
+    .map((entry) => `${entry.sender}: ${entry.message}`)
+    .join("\n");
+
+  const contextPrompt = `You are helping enhance a user query by adding conversation context. The user has an ongoing conversation and their latest query might reference previous messages.
+
+**Conversation History (most recent):**
+${recentContext}
+
+**Latest User Query:** "${clientQuery}"
+
+**Your Task:**
+Analyze if the latest query references previous conversation context (like "that email", "he said", "the one we discussed", "reply to it", etc.). If it does, enhance the query by adding the missing context to make it self-contained and clear.
+
+if the user is asking a query that is not related to the conversation history, return the original query.
+
+**Response Format (JSON):**
+{
+  "enhancedQuery": "The improved query with context added",
+  "contextUsed": true/false,
+  "reasoning": "Brief explanation of what context was added or why none was needed"
+}
+
+**Examples:**
+- If user previously asked about "emails from John" and now says "reply to it" → enhance to "reply to the email from John"
+- if the User previosly asked about a specific email and now says "label, or draft a response to it" → enhance to "label the email as 'important' or draft a response to the email from john + more email context"
+- If user says "find emails about the meeting" with no prior context → keep original
+- If user says "that project email" after discussing project emails → enhance with specific project context
+
+Only enhance if there are clear references that need context. Don't change queries that are already complete.`;
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: contextPrompt }],
+      response_format: { type: "json_object" },
+    });
+
+    const result = JSON.parse(response.choices[0].message.content);
+    console.log(
+      `[CONTEXT] Query enhancement - Used context: ${result.contextUsed}, Reasoning: ${result.reasoning}`
+    );
+
+    return result;
+  } catch (error) {
+    console.error("Error enhancing query with context:", error);
+    return {
+      enhancedQuery: clientQuery,
+      contextUsed: false,
+      reasoning: "Error in context enhancement",
+    };
+  }
+}
+
 const tools = [
   //   {
   //     type: "function",
@@ -112,6 +231,10 @@ async function actionable(
   user_profile
 ) {
   console.log("profile: " + user_profile);
+
+  // Add user query to conversation history
+  addToConversation(socket.id, clientQuery, "user");
+
   const accessToken = "some-access-token"; // Replace with actual token retrieval
 
   // Call OpenAI with function calling enabled
@@ -128,7 +251,9 @@ async function actionable(
   const toolCall = response.choices[0].message.tool_calls?.[0];
   console.log(response.choices[0].message);
   if (!toolCall) {
-    socket.emit("response", { message: response.choices[0].message.content });
+    const responseMessage = response.choices[0].message.content;
+    addToConversation(socket.id, responseMessage, "assistant");
+    socket.emit("response", { message: responseMessage });
     return;
   }
 
@@ -146,7 +271,7 @@ async function actionable(
   if (requiresEmailId) {
     let emailId = args.emailId;
     if (!emailId) {
-      // If emailId isn’t provided, search for it
+      // If emailId isn't provided, search for it
       socket.emit("status", "searching emails for action");
 
       const extractContextPrompt = `The following is the user's query: "${clientQuery}".
@@ -166,16 +291,20 @@ async function actionable(
         extractContextResponse.choices[0].message.content.trim();
 
       if (extractedContext === "None") {
+        const responseMessage = "not enought context given to extract email id";
+        addToConversation(socket.id, responseMessage, "assistant");
         socket.emit("response", {
-          message: "not enought context given to extract email id",
+          message: responseMessage,
         });
         return;
       }
       const fullEmails = await retrieveFullEmail(userId, extractedContext); // Assume this function exists
 
       if (!fullEmails || fullEmails.length === 0) {
+        const responseMessage = "No relevant emails found for the action.";
+        addToConversation(socket.id, responseMessage, "assistant");
         socket.emit("response", {
-          message: "No relevant emails found for the action.",
+          message: responseMessage,
         });
         return;
       }
@@ -184,8 +313,11 @@ async function actionable(
 
       const askConfirmation = () => {
         if (emailIndex >= fullEmails.length) {
+          const responseMessage =
+            "No more emails to confirm. Action cancelled.";
+          addToConversation(socket.id, responseMessage, "assistant");
           socket.emit("response", {
-            message: "No more emails to confirm. Action cancelled.",
+            message: responseMessage,
           });
           return;
         }
@@ -237,6 +369,7 @@ ${formattedEmailContent}
               socket,
               user_profile
             );
+            addToConversation(socket.id, result, "assistant");
             socket.emit("response", {
               message: result,
             });
@@ -244,8 +377,10 @@ ${formattedEmailContent}
             response.toLowerCase() === "cancel" ||
             response.toLowerCase() === "stop"
           ) {
+            const responseMessage = "Ok! I will cancel the action immediately.";
+            addToConversation(socket.id, responseMessage, "assistant");
             socket.emit("response", {
-              message: "Ok! I will cancel the action immediately.",
+              message: responseMessage,
             });
             return;
           } else if (
@@ -255,8 +390,10 @@ ${formattedEmailContent}
             emailIndex++;
             askConfirmation();
           } else {
+            const responseMessage = "Please only respond with a Yes/No/Cancel";
+            addToConversation(socket.id, responseMessage, "assistant");
             socket.emit("response", {
-              message: "Please only respond with a Yes/No/Cancel",
+              message: responseMessage,
             });
             askConfirmation();
           }
@@ -273,6 +410,7 @@ ${formattedEmailContent}
         socket,
         user_profile
       );
+      addToConversation(socket.id, result, "assistant");
       socket.emit("response", {
         message: result,
       });
@@ -286,6 +424,10 @@ ${formattedEmailContent}
       socket,
       user_profile
     );
+    addToConversation(socket.id, result, "assistant");
+    socket.emit("response", {
+      message: result,
+    });
   }
 }
 
@@ -338,23 +480,25 @@ async function query(socket, userId, clientQuery, user_profile) {
   };
 
   console.log(user_profile + " HEELLO");
-  socket.emit("status", "classifying emails");
+
+  // Add user query to conversation history
+  addToConversation(socket.id, clientQuery, "user");
+
+  socket.emit("status", "enhancing query with conversation context");
 
   try {
-    // const rewrite_prompt = `The following is the user's query: "${clientQuery}".
+    // Enhance query with conversation context (disabled for now)
+    const contextStartTime = Date.now();
+    // const contextResult = await enhanceQueryWithContext(clientQuery, socket.id);
+    const contextDuration = Date.now() - contextStartTime;
 
-    // Your task is to rewrite the query to ensure it works optimally with my RAG (Retrieval-Augmented Generation) system. The RAG system uses a retrieval process to find the most relevant emails from the user's inbox, and then a generation model is applied to answer the user's query based on those emails.
+    console.log(
+      `[PERF] Context Enhancement: ${contextDuration}ms | Total: ${
+        Date.now() - startTime
+      }ms`
+    );
+    console.log(`[CONTEXT] Using original query: "${clientQuery}"`);
 
-    // Please rewrite the query so that it is clear, concise, and properly structured for the RAG system to retrieve the most relevant emails and generate the best response. Keep the same tone and style as the original query, but ensure it works effectively with the system's capabilities.
-
-    // Only return the rewritten query, and ensure it is optimized for retrieving and generating information accurately from the user's emails.`;
-
-    // const rewrite_response = await openai.chat.completions.create({
-    //   model: "gpt-4o-mini",
-    //   messages: [{ role: "user", content: rewrite_prompt }],
-    // });
-
-    // Extract the rewritten query
     const rewritten_query = clientQuery;
 
     console.log("Rewritten Query:", rewritten_query);
@@ -379,11 +523,9 @@ async function query(socket, userId, clientQuery, user_profile) {
     );
 
     if (!fullEmails || fullEmails.length === 0) {
-      const noResult = {
-        response: "No relevant emails found",
-        emailIds: [],
-      };
-      socket.emit("response", noResult.response);
+      const noResultMessage = "No relevant emails found";
+      addToConversation(socket.id, noResultMessage, "assistant");
+      socket.emit("response", noResultMessage);
       return;
     }
 
@@ -396,8 +538,8 @@ async function query(socket, userId, clientQuery, user_profile) {
     You are an AI assistant tasked with finding information from a user's emails and answering their questions. Strictly base your responses on the content of provided emails. Do  not incorporate external knowledge or speculate beyond what is explicitly stated in the emails. Responses should be accurate, concise, and formatted in clear Markdown.
 
 **Date Context:**
-- Today’s date is: ${currentDate} (format: YYYY-MM-DD).
-- For time references like "tomorrow," "next week," or "yesterday," use the **sent date** of the email as the reference, not today’s date. Convert those into exact dates using the (YYYY-MM-DD) format for clarity.
+- Today's date is: ${currentDate} (format: YYYY-MM-DD).
+- For time references like "tomorrow," "next week," or "yesterday," use the **sent date** of the email as the reference, not today's date. Convert those into exact dates using the (YYYY-MM-DD) format for clarity.
 - For example: If an email from 2025-03-01 mentions "meeting tomorrow," interpret that meeting to be on 2025-03-02.
 
 **Emails for Input:**
@@ -419,18 +561,16 @@ ${fullEmails
 - If multiple emails are relevant for the query, find the most relevant ones and summarize that information.
 - Don't regurgitate the email content; instead, provide a concise summary or answer based on the emails.
 - When interpreting vague references (like "meeting next week"), use the date-time of the emails given to find the best one.
-- If the answer cannot be determined from the emails, respond with - "**Hmm, No Luck Here:** Looks like these emails don’t have quite enough to work with for this one."
+- If the answer cannot be determined from the emails, respond with - "**Hmm, No Luck Here:** Looks like these emails don't have quite enough to work with for this one."
 - Include an array of the emailIds you used in forming your response.
 
-**How I’ll Respond:**
-Here’s the JSON format I’ll use:
+**How I'll Respond:**
+Here's the JSON format I'll use:
 {
   "response": "A markdown-formatted answer with appropriate use of headers (##), bullet points, and minimal but clear emphasis (bold or italic) to ensure readability.",
   "emailIds": ["list", "of", "email", "IDs", "I", "leaned", "on"]
 }
 `;
-
-    console.log("Prompt:", prompt);
 
     // STREAMING IMPLEMENTATION - Stream response in real-time for better UX
     console.log("🚀 Starting RAG response streaming...");
@@ -459,7 +599,6 @@ Here’s the JSON format I’ll use:
         if (content) {
           fullResponse += content;
           // Log each chunk as it comes in
-          console.log("📦 Streaming chunk:", content);
           // Stream each chunk to the client immediately
           socket.emit("stream_chunk", { chunk: content });
         }
@@ -477,6 +616,9 @@ Here’s the JSON format I’ll use:
 
         console.log("📧 Parsed response content:", jsonResult.response);
         console.log("🔗 Email IDs used:", emailIds);
+
+        // Add assistant response to conversation history
+        addToConversation(socket.id, jsonResult.response, "assistant");
 
         // Send final response with metadata
         socket.emit("stream_complete", {
@@ -533,6 +675,9 @@ Here’s the JSON format I’ll use:
       console.log("📧 Fallback parsed content:", jsonResult.response);
       console.log("🔗 Fallback email IDs:", jsonResult.emailIds);
 
+      // Add assistant response to conversation history
+      addToConversation(socket.id, jsonResult.response, "assistant");
+
       console.log(
         `[PERF] Fallback Response Generation: ${
           Date.now() - responseStartTime
@@ -565,9 +710,31 @@ async function setupSocket(io) {
     console.log(`A user connected with userId: ${userId}`);
     console.log(`A user connected with refreshToken: ${refreshToken}`);
     console.log(`A user connected with user_profile: ${user_profile}`);
+    console.log(
+      `[CONVERSATION] Socket ID: ${socket.id} - Starting new conversation`
+    );
 
     let emailQueue = [];
     let currentQuery = null;
+
+    // Handle disconnection to clean up conversation history
+    socket.on("disconnect", () => {
+      console.log(
+        `[CONVERSATION] Socket ID: ${socket.id} - User disconnected, clearing conversation`
+      );
+      clearConversation(socket.id);
+    });
+
+    // Debug endpoint to view conversation history
+    socket.on("debug_conversation", () => {
+      const history = getConversationHistory(socket.id);
+      const stats = getConversationStats();
+      socket.emit("debug_response", {
+        conversation: history,
+        stats: stats,
+      });
+      console.log(`[DEBUG] Conversation history for ${socket.id}:`, history);
+    });
 
     socket.on("actionable", async (data) => {
       const userId = socket.handshake.query.userId;
@@ -594,6 +761,27 @@ async function setupSocket(io) {
       }
 
       socket.emit("RAGQUERY");
+
+      console.warn(`🟡 [QUERY] Raw query: "${clientQuery}"`);
+
+      const enhancedQuery = await enhanceQueryWithContext(
+        clientQuery,
+        socket.id
+      );
+
+      if (enhancedQuery.contextUsed) {
+        console.warn(
+          `🟠 [QUERY] Enhanced query: "${enhancedQuery.enhancedQuery}"`
+        );
+        console.warn(
+          `🟠 [QUERY] Enhancement reason: ${enhancedQuery.reasoning}`
+        );
+        clientQuery = enhancedQuery.enhancedQuery;
+      } else {
+        console.warn(
+          `🟡 [QUERY] No enhancement needed: ${enhancedQuery.reasoning}`
+        );
+      }
 
       // use open ai call to classify user query:
       const classification = await openai.chat.completions.create({
