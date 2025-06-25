@@ -73,7 +73,7 @@ async function enhanceQueryWithContext(clientQuery, socketId) {
     .map((entry) => `${entry.sender}: ${entry.message}`)
     .join("\n");
 
-  const contextPrompt = `You are helping enhance a user query by adding conversation context. The user has an ongoing conversation and their latest query might reference previous messages.
+  const contextPrompt = `You are helping enhance a user query by adding conversation context. The user has an ongoing conversation and their latest query might reference previous messages for both SEARCH and ACTION purposes.
 
 **Conversation History (most recent):**
 ${recentContext}
@@ -81,9 +81,17 @@ ${recentContext}
 **Latest User Query:** "${clientQuery}"
 
 **Your Task:**
-Analyze if the latest query references previous conversation context (like "that email", "he said", "the one we discussed", "reply to it", etc.). If it does, enhance the query by adding the missing context to make it self-contained and clear.
+Analyze if the latest query references previous conversation context. This includes:
+1. **Direct references** (like "that email", "he said", "the one we discussed", "reply to it")
+2. **Action queries that need context** (like drafting emails with previously discussed details)
+3. **Follow-up queries** that build on previous information requests
 
-if the user is asking a query that is not related to the conversation history, return the original query.
+When enhancing, capture ALL relevant context that would help with:
+- **Email search/retrieval** (finding the right emails)
+- **Action execution** (drafting responses with proper context)
+- **Information gathering** (getting comprehensive details)
+
+If the user is asking a query that is not related to the conversation history, return the original query.
 
 **Response Format (JSON):**
 {
@@ -93,10 +101,17 @@ if the user is asking a query that is not related to the conversation history, r
 }
 
 **Examples:**
-- If user previously asked about "emails from John" and now says "reply to it" → enhance to "reply to the email from John"
-- if the User previosly asked about a specific email and now says "label, or draft a response to it" → enhance to "label the email as 'important' or draft a response to the email from john + more email context"
-- If user says "find emails about the meeting" with no prior context → keep original
-- If user says "that project email" after discussing project emails → enhance with specific project context
+- User asks about "project updates from Sarah" → later says "draft a response" → enhance to "draft a response to Sarah's project update email, referencing the project details xyz we discussed"
+- User asks about "meeting details" → later says "reply saying I can't make it" → enhance to "reply to the meeting email saying I can't make it, include the meeting details xyz for context"
+- User asks about "flight confirmation" → later says "forward it to my assistant" → enhance to "forward the flight confirmation email to my assistant"
+- User asks about "contract from legal team" → later says "draft questions about the terms" → enhance to "draft questions about the contract terms from the legal team email"
+- If user says "find emails about vacation" with no prior context → keep original
+
+**Key Enhancement Strategy:**
+- Include specific people, topics, or email types mentioned in previous messages
+- Add context about what action should reference (meeting details, project info, etc.)
+- Preserve the original intent while making it more specific and searchable
+- Help the RAG system find the most relevant emails for comprehensive context
 
 Only enhance if there are clear references that need context. Don't change queries that are already complete.`;
 
