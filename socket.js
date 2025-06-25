@@ -558,11 +558,13 @@ ${fullEmails
 
 **Output Requirements:**
 - Base your answer **only** on the provided emails.
-- If multiple emails are relevant for the query, find the most relevant ones and summarize that information.
+- If multiple emails are relevant for the query, use the most relevant ones and awnser the users query and be descriptive.
 - Don't regurgitate the email content; instead, provide a concise summary or answer based on the emails.
 - When interpreting vague references (like "meeting next week"), use the date-time of the emails given to find the best one.
 - If the answer cannot be determined from the emails, respond with - "**Hmm, No Luck Here:** Looks like these emails don't have quite enough to work with for this one."
 - Include an array of the emailIds you used in forming your response.
+
+BE FRIENDLY AND DESCRIPTIVE. DONT BE TOO CONCISE. 
 
 **How I'll Respond:**
 Here's the JSON format I'll use:
