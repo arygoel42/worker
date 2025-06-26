@@ -86,10 +86,15 @@ Analyze if the latest query references previous conversation context. This inclu
 2. **Action queries that need context** (like drafting emails with previously discussed details)
 3. **Follow-up queries** that build on previous information requests
 
-When enhancing, capture ALL relevant context that would help with:
-- **Email search/retrieval** (finding the right emails)
-- **Action execution** (drafting responses with proper context)
-- **Information gathering** (getting comprehensive details)
+**Enhancement Strategy by Query Type:**
+
+**For SEARCH queries:** Add specific references to help find the right emails
+**For ACTION queries:** Include ALL relevant context and details from the conversation since no RAG search will happen
+
+When enhancing, capture context that would help with:
+- **Email search/retrieval** (finding the right emails) - for search queries
+- **Action execution** (drafting responses with comprehensive context) - for action queries
+- **Information gathering** (getting comprehensive details) - for search queries
 
 If the user is asking a query that is not related to the conversation history, return the original query.
 
@@ -101,11 +106,16 @@ If the user is asking a query that is not related to the conversation history, r
 }
 
 **Examples:**
-- User asks about "project updates from Sarah" → later says "draft a response" → enhance to "draft a response to Sarah's project update email, referencing the project details xyz we discussed"
-- User asks about "meeting details" → later says "reply saying I can't make it" → enhance to "reply to the meeting email saying I can't make it, include the meeting details xyz for context"
-- User asks about "flight confirmation" → later says "forward it to my assistant" → enhance to "forward the flight confirmation email to my assistant"
-- User asks about "contract from legal team" → later says "draft questions about the terms" → enhance to "draft questions about the contract terms from the legal team email"
+
+**SEARCH Query Examples:**
+- User asks about "project updates from Sarah" → later says "find that email again" → enhance to "find the project update email from Sarah"
 - If user says "find emails about vacation" with no prior context → keep original
+- if user says "give me updates on project xyz" and later says "who works with me" or "who is the project manager" → enhance to "Who are my team members for project xyz", "who is the project manager for project xyz"
+
+**ACTION Query Examples (include ALL context):**
+- User asks about "project updates from Sarah" (assistant responds with timeline details, budget concerns, Q4 deadlines) → later says "draft a response" → enhance to "draft a response to Sarah's project update email. Include context: Sarah mentioned Q4 timeline delays, budget concerns of $50k overrun, and need for additional resources. Reference these specific details in the response."
+- User asks about "meeting details" (assistant responds with time, agenda, attendees) → later says "reply saying I can't make it" → enhance to "reply to the meeting email saying I can't make it. Meeting context: scheduled for Friday 2pm, agenda includes budget review and Q1 planning, attendees are John, Sarah, and marketing team. Include this context in the response."
+- User asks about "contract terms" (assistant explains key points) → later says "draft questions" → enhance to "draft questions about the contract terms. Contract context: includes 6-month renewal clause, $10k monthly fee, and performance metrics requirements. Draft questions addressing these specific terms."
 
 **Key Enhancement Strategy:**
 - Include specific people, topics, or email types mentioned in previous messages
@@ -245,51 +255,52 @@ async function actionable(
   refreshToken,
   user_profile
 ) {
-  console.log("profile: " + user_profile);
+  try {
+    console.log("profile: " + user_profile);
 
-  // Add user query to conversation history
-  addToConversation(socket.id, clientQuery, "user");
+    // Add user query to conversation history
+    addToConversation(socket.id, clientQuery, "user");
 
-  const accessToken = "some-access-token"; // Replace with actual token retrieval
+    const accessToken = "some-access-token"; // Replace with actual token retrieval
 
-  // Call OpenAI with function calling enabled
+    // Call OpenAI with function calling enabled
 
-  socket.emit("status", "retrieving tokens");
+    socket.emit("status", "retrieving tokens");
 
-  const response = await openai.chat.completions.create({
-    model: "gpt-4o",
-    messages: [{ role: "user", content: clientQuery }],
-    tools: tools,
-    tool_choice: "auto",
-  });
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [{ role: "user", content: clientQuery }],
+      tools: tools,
+      tool_choice: "auto",
+    });
 
-  const toolCall = response.choices[0].message.tool_calls?.[0];
-  console.log(response.choices[0].message);
-  if (!toolCall) {
-    const responseMessage = response.choices[0].message.content;
-    addToConversation(socket.id, responseMessage, "assistant");
-    socket.emit("response", { message: responseMessage });
-    return;
-  }
+    const toolCall = response.choices[0].message.tool_calls?.[0];
+    console.log(response.choices[0].message);
+    if (!toolCall) {
+      const responseMessage = response.choices[0].message.content;
+      addToConversation(socket.id, responseMessage, "assistant");
+      socket.emit("response", { message: responseMessage });
+      return;
+    }
 
-  const functionName = toolCall.function.name;
-  const args = JSON.parse(toolCall.function.arguments);
+    const functionName = toolCall.function.name;
+    const args = JSON.parse(toolCall.function.arguments);
 
-  // Check if emailId is required
-  const requiresEmailId = [
-    "archiveEmails",
-    "label",
-    "forwardEmails",
-    "draftResponse",
-  ].includes(functionName);
+    // Check if emailId is required
+    const requiresEmailId = [
+      "archiveEmails",
+      "label",
+      "forwardEmails",
+      "draftResponse",
+    ].includes(functionName);
 
-  if (requiresEmailId) {
-    let emailId = args.emailId;
-    if (!emailId) {
-      // If emailId isn't provided, search for it
-      socket.emit("status", "searching emails for action");
+    if (requiresEmailId) {
+      let emailId = args.emailId;
+      if (!emailId) {
+        // If emailId isn't provided, search for it
+        socket.emit("status", "searching emails for action");
 
-      const extractContextPrompt = `The following is the user's query: "${clientQuery}".
+        const extractContextPrompt = `The following is the user's query: "${clientQuery}".
 
       Your Task is to extract the part of the users query which can be used as context for a RAG query and return it. If the context is not found, return "None". The relevant context is the part of the query that can be used to find the email ID. The user's instructions for the content of the response is not relevant context.
 
@@ -297,39 +308,43 @@ async function actionable(
       Input: "I want you to draft a response to the email from charlie regarding the team meeting and tell him I cannot make it."
       Output: "team meeting with charlie"
     `;
-      const extractContextResponse = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [{ role: "user", content: extractContextPrompt }],
-      });
-
-      const extractedContext =
-        extractContextResponse.choices[0].message.content.trim();
-
-      if (extractedContext === "None") {
-        const responseMessage = "not enought context given to extract email id";
-        addToConversation(socket.id, responseMessage, "assistant");
-        socket.emit("response", {
-          message: responseMessage,
+        const extractContextResponse = await openai.chat.completions.create({
+          model: "gpt-4o",
+          messages: [{ role: "user", content: extractContextPrompt }],
         });
-        return;
-      }
-      const fullEmails = await retrieveFullEmail(userId, extractedContext); // Assume this function exists
 
-      if (!fullEmails || fullEmails.length === 0) {
-        const responseMessage = "No relevant emails found for the action.";
-        addToConversation(socket.id, responseMessage, "assistant");
-        socket.emit("response", {
-          message: responseMessage,
-        });
-        return;
-      }
+        const extractedContext =
+          extractContextResponse.choices[0].message.content.trim();
 
-      let emailIndex = 0;
-
-      const askConfirmation = () => {
-        if (emailIndex >= fullEmails.length) {
+        if (extractedContext === "None") {
           const responseMessage =
-            "No more emails to confirm. Action cancelled.";
+            "not enought context given to extract email id";
+          addToConversation(socket.id, responseMessage, "assistant");
+          socket.emit("response", {
+            message: responseMessage,
+          });
+          return;
+        }
+        let fullEmails;
+        try {
+          console.log(
+            `[ACTION] Searching for emails with context: "${extractedContext}"`
+          );
+          fullEmails = await retrieveFullEmail(userId, extractedContext);
+
+          if (!fullEmails || fullEmails.length === 0) {
+            const responseMessage = "No relevant emails found for the action.";
+            addToConversation(socket.id, responseMessage, "assistant");
+            socket.emit("response", {
+              message: responseMessage,
+            });
+            return;
+          }
+          console.log(`[ACTION] Found ${fullEmails.length} emails for action`);
+        } catch (error) {
+          console.error(`[ACTION] Error retrieving emails:`, error);
+          const responseMessage =
+            "Error occurred while searching for emails. Please try again.";
           addToConversation(socket.id, responseMessage, "assistant");
           socket.emit("response", {
             message: responseMessage,
@@ -337,24 +352,42 @@ async function actionable(
           return;
         }
 
-        const email = fullEmails[emailIndex];
-        const formattedEmailContent = `
+        let emailIndex = 0;
+
+        const askConfirmation = () => {
+          if (emailIndex >= fullEmails.length) {
+            const responseMessage =
+              "No more emails to confirm. Action cancelled.";
+            addToConversation(socket.id, responseMessage, "assistant");
+            socket.emit("response", {
+              message: responseMessage,
+            });
+            return;
+          }
+
+          const email = fullEmails[emailIndex];
+          const formattedEmailContent = `
 ### Email Details
 - **Labels**: ${
-          email.content.split("Labels:")[1]?.split("Subject:")[0]?.trim() ||
-          "N/A"
-        }
+            email.content.split("Labels:")[1]?.split("Subject:")[0]?.trim() ||
+            "N/A"
+          }
 - **Subject**: ${
-          email.content.split("Subject:")[1]?.split("From:")[0]?.trim() || "N/A"
-        }
+            email.content.split("Subject:")[1]?.split("From:")[0]?.trim() ||
+            "N/A"
+          }
 - **From**: ${email.content.split("From:")[1]?.split("To:")[0]?.trim() || "N/A"}
 - **To**: ${email.content.split("To:")[1]?.split("Date:")[0]?.trim() || "N/A"}
 - **Date**: ${
-          email.content.split("Date:")[1]?.split(" ")[0] +
-            " " +
-            email.content.split("Date:")[1]?.split(" ").slice(1, 5).join(" ") || // subject to change if does nto work //
-          "N/A"
-        }
+            email.content.split("Date:")[1]?.split(" ")[0] +
+              " " +
+              email.content
+                .split("Date:")[1]
+                ?.split(" ")
+                .slice(1, 5)
+                .join(" ") || // subject to change if does nto work //
+            "N/A"
+          }
 
 ### Message
 ${
@@ -363,61 +396,77 @@ ${
 }
   `.trim();
 
-        const confirmationMessage = `
+          const confirmationMessage = `
 **Do you want to perform the action on this email?**
 
 ${formattedEmailContent}
   `.trim();
-        socket.emit("status", "awaiting confirmation");
-        socket.emit("confirmation", {
-          message: confirmationMessage,
-          emailId: email.emailId,
-        });
+          socket.emit("status", "awaiting confirmation");
+          socket.emit("confirmation", {
+            message: confirmationMessage,
+            emailId: email.emailId,
+          });
 
-        socket.once("confirmationResponse", async (response) => {
-          if (response.toLowerCase() === "yes") {
-            args.emailId = email.emailId;
-            const result = await executeFunction(
-              functionName,
-              args,
-              refreshToken,
-              socket,
-              user_profile
-            );
-            addToConversation(socket.id, result, "assistant");
-            socket.emit("response", {
-              message: result,
-            });
-          } else if (
-            response.toLowerCase() === "cancel" ||
-            response.toLowerCase() === "stop"
-          ) {
-            const responseMessage = "Ok! I will cancel the action immediately.";
-            addToConversation(socket.id, responseMessage, "assistant");
-            socket.emit("response", {
-              message: responseMessage,
-            });
-            return;
-          } else if (
-            response.toLowerCase() === "next" ||
-            response.toLowerCase() === "no"
-          ) {
-            emailIndex++;
-            askConfirmation();
-          } else {
-            const responseMessage = "Please only respond with a Yes/No/Cancel";
-            addToConversation(socket.id, responseMessage, "assistant");
-            socket.emit("response", {
-              message: responseMessage,
-            });
-            askConfirmation();
-          }
-        });
-      };
+          socket.once("confirmationResponse", async (response) => {
+            if (response.toLowerCase() === "yes") {
+              args.emailId = email.emailId;
+              const result = await executeFunction(
+                functionName,
+                args,
+                refreshToken,
+                socket,
+                user_profile
+              );
+              addToConversation(socket.id, result, "assistant");
+              socket.emit("response", {
+                message: result,
+              });
+            } else if (
+              response.toLowerCase() === "cancel" ||
+              response.toLowerCase() === "stop"
+            ) {
+              const responseMessage =
+                "Ok! I will cancel the action immediately.";
+              addToConversation(socket.id, responseMessage, "assistant");
+              socket.emit("response", {
+                message: responseMessage,
+              });
+              return;
+            } else if (
+              response.toLowerCase() === "next" ||
+              response.toLowerCase() === "no"
+            ) {
+              emailIndex++;
+              askConfirmation();
+            } else {
+              const responseMessage =
+                "Please only respond with a Yes/No/Cancel";
+              addToConversation(socket.id, responseMessage, "assistant");
+              socket.emit("response", {
+                message: responseMessage,
+              });
+              askConfirmation();
+            }
+          });
+        };
 
-      askConfirmation();
+        askConfirmation();
+      } else {
+        // If emailId is provided, execute directly
+        const result = await executeFunction(
+          functionName,
+          args,
+          refreshToken,
+          socket,
+          user_profile
+        );
+        addToConversation(socket.id, result, "assistant");
+        socket.emit("response", {
+          message: result,
+        });
+      }
     } else {
-      // If emailId is provided, execute directly
+      // No emailId required (e.g., mass outreach draft)
       const result = await executeFunction(
         functionName,
         args,
@@ -430,18 +479,13 @@ ${formattedEmailContent}
         message: result,
       });
     }
-  } else {
-    // No emailId required (e.g., mass outreach draft)
-    const result = await executeFunction(
-      functionName,
-      args,
-      refreshToken,
-      socket,
-      user_profile
-    );
-    addToConversation(socket.id, result, "assistant");
+  } catch (error) {
+    console.error(`[ACTION] Critical error in actionable function:`, error);
+    const errorMessage =
+      "Sorry, an error occurred while processing your action. Please try again.";
+    addToConversation(socket.id, errorMessage, "assistant");
     socket.emit("response", {
-      message: result,
+      message: errorMessage,
     });
   }
 }
