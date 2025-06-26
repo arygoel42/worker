@@ -789,6 +789,18 @@ async function setupSocket(io) {
       return;
     }
 
+    if (!refreshToken || refreshToken === "-1") {
+      console.warn(
+        `[AUTH] Invalid refresh token for user ${userId}: ${refreshToken}`
+      );
+      socket.emit(
+        "error",
+        "Invalid or missing refresh token. Please re-authenticate."
+      );
+      socket.disconnect();
+      return;
+    }
+
     console.log(`A user connected with userId: ${userId}`);
     console.log(`A user connected with refreshToken: ${refreshToken}`);
     console.log(`A user connected with user_profile: ${user_profile}`);
