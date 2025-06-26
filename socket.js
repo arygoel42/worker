@@ -325,12 +325,20 @@ async function actionable(
           });
           return;
         }
+
         let fullEmails;
         try {
           console.log(
             `[ACTION] Searching for emails with context: "${extractedContext}"`
           );
-          fullEmails = await retrieveFullEmail(userId, extractedContext);
+          const searchResult = await retrieveFullEmail(
+            userId,
+            extractedContext
+          );
+          fullEmails = searchResult.emails || searchResult; // Handle both formats
+
+          console.log(`[ACTION] Search result:`, searchResult);
+          console.log(`[ACTION] Full emails:`, fullEmails);
 
           if (!fullEmails || fullEmails.length === 0) {
             const responseMessage = "No relevant emails found for the action.";
@@ -355,7 +363,11 @@ async function actionable(
         let emailIndex = 0;
 
         const askConfirmation = () => {
-          if (emailIndex >= fullEmails.length) {
+          if (
+            !fullEmails ||
+            !Array.isArray(fullEmails) ||
+            emailIndex >= fullEmails.length
+          ) {
             const responseMessage =
               "No more emails to confirm. Action cancelled.";
             addToConversation(socket.id, responseMessage, "assistant");
@@ -366,6 +378,15 @@ async function actionable(
           }
 
           const email = fullEmails[emailIndex];
+          if (!email || !email.content) {
+            console.error(
+              `[ACTION] Invalid email at index ${emailIndex}:`,
+              email
+            );
+            emailIndex++;
+            askConfirmation();
+            return;
+          }
           const formattedEmailContent = `
 ### Email Details
 - **Labels**: ${
