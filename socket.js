@@ -81,7 +81,18 @@ ${recentContext}
 **Latest User Query:** "${clientQuery}"
 
 **Your Task:**
-Analyze if the latest query references previous conversation context. This includes:
+FIRST, determine if the latest query is actually related to the previous conversation. Then decide whether to enhance or keep original.
+
+**Step 1: Relatedness Check**
+- Does the query reference previous topics, people, or emails discussed?
+- Does it use pronouns or references that need previous context to understand?
+- Is it a follow-up action on something previously discussed?
+
+**Step 2: Enhancement Decision**
+- **If UNRELATED to previous conversation:** Return original query unchanged
+- **If RELATED:** Proceed with enhancement based on type below
+
+**Enhancement Rules (ONLY if related):**
 1. **Direct references** (like "that email", "he said", "the one we discussed", "reply to it")
 2. **Action queries that need context** (like drafting emails with previously discussed details)
 3. **Follow-up queries** that build on previous information requests
@@ -91,12 +102,7 @@ Analyze if the latest query references previous conversation context. This inclu
 **For SEARCH queries:** Add specific references to help find the right emails
 **For ACTION queries:** Include ALL relevant context and details from the conversation since no RAG search will happen
 
-When enhancing, capture context that would help with:
-- **Email search/retrieval** (finding the right emails) - for search queries
-- **Action execution** (drafting responses with comprehensive context) - for action queries
-- **Information gathering** (getting comprehensive details) - for search queries
-
-If the user is asking a query that is not related to the conversation history, return the original query.
+**CRITICAL:** If the query is about a completely different topic/person/subject than what was previously discussed, DO NOT enhance it. Many users switch topics entirely.
 
 **Response Format (JSON):**
 {
@@ -107,15 +113,22 @@ If the user is asking a query that is not related to the conversation history, r
 
 **Examples:**
 
-**SEARCH Query Examples:**
-- User asks about "project updates from Sarah" → later says "find that email again" → enhance to "find the project update email from Sarah"
-- If user says "find emails about vacation" with no prior context → keep original
-- if user says "give me updates on project xyz" and later says "who works with me" or "who is the project manager" → enhance to "Who are my team members for project xyz", "who is the project manager for project xyz"
+**UNRELATED Queries (DO NOT enhance):**
+- User asks about "project updates from Sarah" → later asks "find emails from my bank" → keep original (different topic)
+- User discusses "meeting with team" → later asks "what did Amazon say about my order" → keep original (completely different)
+- User asks about "contract terms" → later asks "find vacation emails" → keep original (unrelated topics)
 
-**ACTION Query Examples (include ALL context):**
-- User asks about "project updates from Sarah" (assistant responds with timeline details, budget concerns, Q4 deadlines) → later says "draft a response" → enhance to "draft a response to Sarah's project update email. Include context: Sarah mentioned Q4 timeline delays, budget concerns of $50k overrun, and need for additional resources. Reference these specific details in the response."
-- User asks about "meeting details" (assistant responds with time, agenda, attendees) → later says "reply saying I can't make it" → enhance to "reply to the meeting email saying I can't make it. Meeting context: scheduled for Friday 2pm, agenda includes budget review and Q1 planning, attendees are John, Sarah, and marketing team. Include this context in the response."
-- User asks about "contract terms" (assistant explains key points) → later says "draft questions" → enhance to "draft questions about the contract terms. Contract context: includes 6-month renewal clause, $10k monthly fee, and performance metrics requirements. Draft questions addressing these specific terms."
+**RELATED SEARCH Queries (enhance):**
+- User asks about "project updates from Sarah" → later says "find that email again" → enhance to "find the project update email from Sarah"
+- User says "give me updates on project xyz" → later says "who is the project manager" → enhance to "who is the project manager for project xyz"
+
+**RELATED ACTION Queries (include ALL context):**
+- User asks about "project updates from Sarah" (assistant responds with timeline details, budget concerns) → later says "draft a response" → enhance to "draft a response to Sarah's project update email. Include context: Sarah mentioned Q4 timeline delays, budget concerns of $50k overrun, and need for additional resources."
+- User asks about "meeting details" → later says "reply saying I can't make it" → enhance to "reply to the meeting email saying I can't make it. Meeting context: scheduled for Friday 2pm, agenda includes budget review and Q1 planning."
+
+**STANDALONE Queries (keep original):**
+- "Find emails about vacation" with no prior context → keep original
+- "What did the bank say about my loan?" when previous conversation was about work meetings → keep original
 
 **Key Enhancement Strategy:**
 - Include specific people, topics, or email types mentioned in previous messages
