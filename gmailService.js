@@ -8,6 +8,14 @@ const { OpenAI } = require("openai");
 const { raw } = require("express");
 const { throwDeprecation } = require("process");
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const AWS = require("aws-sdk");
+const s3 = new AWS.S3({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId:     process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  },
+});
 
 async function getOriginalEmailDetails2(accessToken, messageId) {
   const emailEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`;
@@ -85,6 +93,7 @@ async function getOriginalSubject(accessToken, messageId) {
 }
 
 async function getAccessTokenFromRefreshToken(storedRefreshToken) {
+  console.log("[OAUTH] using client_id:", process.env.CLIENT_ID);
   const tokenEndpoint = "https://oauth2.googleapis.com/token";
 
   // params needed to generate access token from endpoint
@@ -659,23 +668,64 @@ async function createDraft(
   toEmail,
   originalSMTPMessageId,
   subject,
-  bool
+  bool,
+  attachments = []
 ) {
   const draftEndpoint = "https://gmail.googleapis.com/gmail/v1/users/me/drafts";
 
-  const emailContent = [
-    'Content-Type: text/plain; charset="UTF-8"',
-    "MIME-Version: 1.0",
-    "Content-Transfer-Encoding: 7bit",
-    `To: ${bool ? toEmail : toEmail.fromEmail}`,
-    `Subject: Re: ${subject}`,
-    originalSMTPMessageId ? `In-Reply-To: ${originalSMTPMessageId}` : "",
-    originalSMTPMessageId ? `References: ${originalSMTPMessageId}` : "",
-    "",
-    messageDescription,
-  ]
-    .filter(Boolean) // remove empty lines due to undefined headers
-    .join("\r\n");
+  if (attachments.length === 0) {
+    // Plain-text draft (original behaviour)
+    emailContent = [
+      'Content-Type: text/plain; charset="UTF-8"',
+      "MIME-Version: 1.0",
+      "Content-Transfer-Encoding: 7bit",
+      `To: ${bool ? toEmail : toEmail.fromEmail}`,
+      `Subject: Re: ${subject}`,
+      originalSMTPMessageId ? `In-Reply-To: ${originalSMTPMessageId}` : "",
+      originalSMTPMessageId ? `References: ${originalSMTPMessageId}` : "",
+      "",
+      messageDescription,
+    ]
+      .filter(Boolean)
+      .join("\r\n");
+  } else {
+    // Multipart with file attachments
+    const boundary = "===CHATFILES===";
+    emailContent =
+      `Content-Type: multipart/mixed; boundary="${boundary}"\r\n` +
+      "MIME-Version: 1.0\r\n" +
+      `To: ${bool ? toEmail : toEmail.fromEmail}\r\n` +
+      `Subject: Re: ${subject}\r\n` +
+      (originalSMTPMessageId
+        ? `In-Reply-To: ${originalSMTPMessageId}\r\nReferences: ${originalSMTPMessageId}\r\n`
+        : "") +
+      `\r\n--${boundary}\r\n` +
+      'Content-Type: text/plain; charset="UTF-8"\r\n\r\n' +
+      messageDescription +
+      "\r\n";
+
+    // Append each attachment
+    for (const f of attachments) {
+      console.log(process.env.S3_BUCKET)
+      console.log("[DEBUG] downloading key:", f.s3Key);
+      const { Body } = await s3
+        .getObject({
+          Bucket: process.env.S3_BUCKET,
+          Key: f.s3Key,
+        })
+        .promise();
+
+      emailContent +=
+        `--${boundary}\r\n` +
+        `Content-Type: application/octet-stream; name="${f.fileName}"\r\n` +
+        "Content-Transfer-Encoding: base64\r\n" +
+        `Content-Disposition: attachment; filename="${f.fileName}"\r\n\r\n` +
+        Body.toString("base64") +
+        "\r\n";
+    }
+
+    emailContent += `--${boundary}--`;
+  }
 
   const encodedMessage = Buffer.from(emailContent)
     .toString("base64")
@@ -1085,8 +1135,19 @@ async function massOutreachDraft(
   emails,
   extraContext,
   socket,
-  user_profile
+  user_profile,
+  attachments = []
 ) {
+  if (recipients.length === 1 && recipients[0] === socket.handshake.query.userEmail.toLowerCase()) {
+    // GPT accidentally used the outreach tool for a self-reply.
+    return singleDraft(
+       refreshToken,
+       extraContext,
+       /*emailId*/ null,
+       socket,
+       user_profile,
+       attachments);
+  }
   const bool = true;
   let draftNumber = 1;
   const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
@@ -1103,13 +1164,20 @@ async function massOutreachDraft(
     const prompt = `
 I want you to draft an email using the following instruction: ${extraContext}. Use the Users profile as additional context: ${user_profile}. The email should be of the same tone as the instruction. Respond with a JSON object containing two fields: "subject" (the email subject line) and "emailContent" (the body of the draft email). Ensure the response is formatted as valid JSON.
 `;
+    const sysBase =
+      "You can attach any files provided via the `attachments` array when drafting emails.";
+    const sysAttach =
+      attachments && attachments.length
+        ? "\nFiles selected:\n" +
+          attachments.map(f => `- ${f.fileName}`).join("\n")
+        : "";
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o",
       messages: [
         {
           role: "system",
-          content: "You are an assistant that helps draft emails",
+          content: "You are an assistant that helps draft emails" + sysBase + sysAttach,
         },
         { role: "user", content: prompt },
       ],
@@ -1131,7 +1199,8 @@ I want you to draft an email using the following instruction: ${extraContext}. U
       email,
       undefined,
       subject,
-      bool
+      bool,
+      attachments
     );
 
     console.log(draftResponse.messageId);
@@ -1152,7 +1221,8 @@ async function singleDraft(
   extraContext,
   emailId,
   socket,
-  user_profile
+  user_profile,
+  attachments = []
 ) {
   const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
 
@@ -1187,7 +1257,9 @@ async function singleDraft(
     draftedEmail,
     latestEmail,
     originalSMTPMessageId,
-    subject
+    subject,
+    false,
+    attachments
   );
 
   //async function createDraft(accessToken, threadId, messageDescription, toEmail, originalSMTPMessageId, subject) {

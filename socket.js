@@ -222,41 +222,65 @@ const tools = [
   //     },
   //   },
   {
-    type: "function",
-    function: {
-      name: "draftResponse",
-      description:
-        "Create a draft in response to a specific email. Use this when the user wants to respond to an email or person with a message draft.",
-      parameters: {
-        type: "object",
-        properties: {
-          extraContext: {
-            type: "string",
-            description: "Instructions to follow for the draft",
-          },
+  type: "function",
+  function: {
+    name: "draftResponse",
+    description:
+      "Create a draft reply to a specific email. Use this when the user wants to respond to an email with a message draft.",
+    parameters: {
+      type: "object",
+      properties: {
+        extraContext: {
+          type: "string",
+          description:
+            "Any additional instructions the user gives for the reply."
         },
-        required: ["extraContext"],
+        attachments: {
+          type: "array",
+          description: "Files the user selected in the chat to attach.",
+          items: {
+            type: "object",
+            properties: {
+              fileName: { type: "string" },
+              s3Key:    { type: "string" }
+            },
+            required: ["fileName", "s3Key"]
+          }
+        }
       },
-    },
-  },
+      required: ["extraContext"]
+    }
+  }
+},
   {
     type: "function",
     function: {
       name: "createNewDrafts",
-      description:
-        "Create new outbound drafts for emails. Use this when the user wants to create a new draft or new drafts to multiple recipients.",
+      description: "Create one or more new email drafts.",
       parameters: {
         type: "object",
         properties: {
-          extraContext: { type: "string", description: "extra Draft content" },
-          emails: {
+          extraContext: { type: "string" },
+          recipients: {
             type: "array",
-            description: "email adresses",
-            items: { type: "string", description: "Individual email address" },
+            description: "Email addresses that should receive the draft",
+            items: { type: "string", format: "email" }
           },
+          attachments:  {
+            type: "array",
+            description: "Files the user selected in the chat to attach.",
+            items: {
+              type: "object",
+              properties: {
+                fileName: { type: "string" },
+                s3Key:    { type: "string" }
+              },
+              required: ["fileName","s3Key"]
+            }
+          }
         },
-        required: ["extraContext", "emails"],
-      },
+        required: ["extraContext", "recipients"]
+      }
     },
   },
 ];
@@ -266,10 +290,12 @@ async function actionable(
   userId,
   clientQuery,
   refreshToken,
-  user_profile
+  user_profile,
+  attachments
 ) {
   try {
     console.log("profile: " + user_profile);
+    console.log("[DEBUG] 2. Enter actionable() — attachments:", attachments);
 
     // Add user query to conversation history
     addToConversation(socket.id, clientQuery, "user");
@@ -280,14 +306,33 @@ async function actionable(
 
     socket.emit("status", "retrieving tokens");
 
+    const sysBase =
+      "You can attach any files provided via the `attachments` array when drafting emails.";
+    const sysAttach =
+      attachments && attachments.length
+        ? "\nFiles selected:\n" +
+          attachments.map(f => `- ${f.fileName}`).join("\n")
+        : "";
+
+
+    console.log(
+      "[DEBUG] 3. Before GPT call — using system prompt with files:",
+      attachments.map((f) => f.fileName)
+    );
+
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
-      messages: [{ role: "user", content: clientQuery }],
+      messages: [{
+          role: "system",
+          content: sysBase + sysAttach,
+        }, { role: "user", content: clientQuery }],
       tools: tools,
       tool_choice: "auto",
     });
 
     const toolCall = response.choices[0].message.tool_calls?.[0];
+    console.log("[DEBUG] 4. GPT chose tool:", toolCall?.function.name);
+    console.log("[DEBUG] 4. Tool args.attachments:", toolCall?.function.arguments);
     console.log(response.choices[0].message);
     if (!toolCall) {
       const responseMessage = response.choices[0].message.content;
@@ -449,7 +494,8 @@ ${formattedEmailContent}
                 args,
                 refreshToken,
                 socket,
-                user_profile
+                user_profile,
+                attachments
               );
               addToConversation(socket.id, result, "assistant");
               socket.emit("response", {
@@ -492,7 +538,8 @@ ${formattedEmailContent}
           args,
           refreshToken,
           socket,
-          user_profile
+          user_profile,
+          attachments
         );
         addToConversation(socket.id, result, "assistant");
         socket.emit("response", {
@@ -506,7 +553,8 @@ ${formattedEmailContent}
         args,
         refreshToken,
         socket,
-        user_profile
+        user_profile,
+        attachments
       );
       addToConversation(socket.id, result, "assistant");
       socket.emit("response", {
@@ -530,28 +578,68 @@ async function executeFunction(
   args,
   refreshToken,
   socket,
-  user_profile
+  user_profile,
+  attachments
 ) {
   socket.emit("status", "performing action");
   switch (functionName) {
     case "label":
       return await relabel(refreshToken, args.emailId, args.labelName, socket);
     case "draftResponse":
+      const uiAttachment  = attachments;              // from socket payload
+      const gptAttachment = args.attachments || [];   // from GPT
+      if ((!args.attachments || args.attachments.length === 0) && attachments?.length) {
+        args.attachments = attachments;
+      }
+      const mergedAttachments = gptAttachment.map(g => {
+        const match = uiAttachment.find(u => u.fileName === g.fileName);
+        return match || g;         // prefer UI version if found
+      });
+
+  console.log("[DEBUG] reply mergedAttachments:", mergedAttachments);
       return await singleDraft(
         refreshToken,
         args.extraContext,
         args.emailId,
         socket,
-        user_profile
+        user_profile,
+        mergedAttachments
       );
 
     case "createNewDrafts":
+      const recipients =
+        Array.isArray(args.recipients) && args.recipients.length
+          ? args.recipients
+          : [socket.handshake.query.userEmail || "me"]; // fallback to self
+      const uiAttachments  = attachments;
+      const gptAttachments = args.attachments || [];
+      const finalAttachments = gptAttachments.map(g => {
+        const match = uiAttachments.find(u => u.fileName === g.fileName);
+        return match || g;
+      });
+
+      console.log("[DEBUG] downloading key will be:", finalAttachments[0]?.s3Key);
+      console.log(
+        "[DEBUG] 5. executeFunction → createNewDrafts — recipients:",
+        recipients
+      );
+
+      if (recipients.length === 1 &&
+      recipients[0].toLowerCase() === (socket.handshake.query.userEmail || '').toLowerCase()) {
+        // Treat as a single reply
+        return singleDraft(
+          refreshToken, args.extraContext, /* emailId */ null,
+          socket, user_profile, finalAttachments
+        );
+      }
+
       return massOutreachDraft(
         refreshToken,
-        args.emails,
+        recipients,
         args.extraContext,
         socket,
-        user_profile
+        user_profile,
+        finalAttachments
       );
     default:
       throw new Error("Unknown function");
@@ -854,7 +942,14 @@ async function setupSocket(io) {
       await actionable(io);
     });
 
-    socket.on("fromclient", async (clientQuery) => {
+    socket.on("fromclient", async (clientPayload) => {
+      const text =
+        typeof clientPayload === "string" ? clientPayload : clientPayload.text;
+      const attachments =
+        typeof clientPayload === "string" ? [] : clientPayload.attachments || [];
+      let clientQuery = text;
+      console.log(clientPayload);
+      console.log("[DEBUG] 1. After parsing payload — attachments:", attachments);
       const userId = socket.handshake.query.userId;
       if (!userId) {
         socket.emit("error", "Missing userId");
@@ -943,7 +1038,8 @@ async function setupSocket(io) {
           userId,
           clientQuery,
           refreshToken,
-          user_profile
+          user_profile,
+          attachments
         );
       }
     });

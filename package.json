@@ -12,6 +12,7 @@
   "description": "",
   "dependencies": {
     "@pinecone-database/pinecone": "^4.1.0",
+    "aws-sdk": "^2.1692.0",
     "axios": "^1.7.9",
     "bull": "^4.16.4",
     "compression": "^1.8.0",
