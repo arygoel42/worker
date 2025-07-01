@@ -260,11 +260,11 @@ const tools = [
       parameters: {
         type: "object",
         properties: {
-          extraContext: { type: "string" },
-          recipients: {
+          extraContext: { type: "string", description: "extra Draft content" },
+          emails: {
             type: "array",
-            description: "Email addresses that should receive the draft",
-            items: { type: "string", format: "email" }
+            description: "email addresses",
+            items: { type: "string", description: "Individual email address" }
           },
           attachments:  {
             type: "array",
@@ -279,7 +279,7 @@ const tools = [
             }
           }
         },
-        required: ["extraContext", "recipients"]
+        required: ["extraContext", "emails"]
       }
     },
   },
@@ -607,9 +607,9 @@ async function executeFunction(
       );
 
     case "createNewDrafts":
-      const recipients =
-        Array.isArray(args.recipients) && args.recipients.length
-          ? args.recipients
+      const emails =
+        Array.isArray(args.emails) && args.emails.length
+          ? args.emails
           : [socket.handshake.query.userEmail || "me"]; // fallback to self
       const uiAttachments  = attachments;
       const gptAttachments = args.attachments || [];
@@ -620,12 +620,12 @@ async function executeFunction(
 
       console.log("[DEBUG] downloading key will be:", finalAttachments[0]?.s3Key);
       console.log(
-        "[DEBUG] 5. executeFunction → createNewDrafts — recipients:",
-        recipients
+        "[DEBUG] 5. executeFunction → createNewDrafts — emails:",
+        emails
       );
 
-      if (recipients.length === 1 &&
-      recipients[0].toLowerCase() === (socket.handshake.query.userEmail || '').toLowerCase()) {
+      if (emails.length === 1 &&
+      emails[0].toLowerCase() === (socket.handshake.query.userEmail || '').toLowerCase()) {
         // Treat as a single reply
         return singleDraft(
           refreshToken, args.extraContext, /* emailId */ null,
@@ -635,7 +635,7 @@ async function executeFunction(
 
       return massOutreachDraft(
         refreshToken,
-        recipients,
+        emails,
         args.extraContext,
         socket,
         user_profile,
