@@ -1138,6 +1138,16 @@ async function massOutreachDraft(
   user_profile,
   attachments = []
 ) {
+  if (recipients.length === 1 && recipients[0] === socket.handshake.query.userEmail.toLowerCase()) {
+    // GPT accidentally used the outreach tool for a self-reply.
+    return singleDraft(
+       refreshToken,
+       extraContext,
+       /*emailId*/ null,
+       socket,
+       user_profile,
+       attachments);
+  }
   const bool = true;
   let draftNumber = 1;
   const accessToken = await getAccessTokenFromRefreshToken(refreshToken);

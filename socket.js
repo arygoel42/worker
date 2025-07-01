@@ -624,6 +624,15 @@ async function executeFunction(
         recipients
       );
 
+      if (recipients.length === 1 &&
+      recipients[0].toLowerCase() === (socket.handshake.query.userEmail || '').toLowerCase()) {
+        // Treat as a single reply
+        return singleDraft(
+          refreshToken, args.extraContext, /* emailId */ null,
+          socket, user_profile, finalAttachments
+        );
+      }
+
       return massOutreachDraft(
         refreshToken,
         recipients,
