@@ -2,7 +2,12 @@ const { config } = require("dotenv").config();
 const { retrieveFullEmail } = require("./RAGService");
 const { OpenAI } = require("openai");
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const { relabel, singleDraft, massOutreachDraft } = require("./gmailService");
+const {
+  relabel,
+  singleDraft,
+  massOutreachDraft,
+  forwardEmails,
+} = require("./gmailService");
 
 // ====== CONVERSATION STORAGE ======
 // In-memory storage for conversations per socket connection
@@ -185,102 +190,129 @@ const tools = [
     function: {
       name: "label",
       description:
-        "Add a label to a specific email. Use this when the user explicitly asks to label or organize an email.",
+        "Add a label to one or multiple emails. Use this when the user explicitly asks to label or organize emails. If specific email IDs are provided in the user query, extract and use them.",
       parameters: {
         type: "object",
         properties: {
+          emailIds: {
+            type: "array",
+            description: "array of email IDs to label (if multiple specified)",
+            items: { type: "string", description: "Individual email ID" },
+          },
           labelName: { type: "string", description: "Label to apply" },
         },
         required: ["labelName"],
       },
     },
   },
-  //   {
-  //     type: "function",
-  //     function: {
-  //       name: "forwardEmails",
-  //       description: "Forward a specific email to a recipient",
-  //       parameters: {
-  //         type: "object",
-  //         properties: {
-  //           accessToken: { type: "string", description: "User's access token" },
-  //           emailId: {
-  //             type: "string",
-  //             description: "ID of the email to forward",
-  //           },
-  //           recipient: {
-  //             type: "string",
-  //             description: "Recipient's email or name",
-  //           },
-  //           context: {
-  //             type: "string",
-  //             description: "Forwarding message (optional)",
-  //           },
-  //         },
-  //         required: ["accessToken", "emailId", "recipient"],
-  //       },
-  //     },
-  //   },
-  {
-  type: "function",
-  function: {
-    name: "draftResponse",
-    description:
-      "Create a draft reply to a specific email. Use this when the user wants to respond to an email with a message draft.",
-    parameters: {
-      type: "object",
-      properties: {
-        extraContext: {
-          type: "string",
-          description:
-            "Any additional instructions the user gives for the reply."
-        },
-        attachments: {
-          type: "array",
-          description: "Files the user selected in the chat to attach.",
-          items: {
-            type: "object",
-            properties: {
-              fileName: { type: "string" },
-              s3Key:    { type: "string" }
-            },
-            required: ["fileName", "s3Key"]
-          }
-        }
-      },
-      required: ["extraContext"]
-    }
-  }
-},
   {
     type: "function",
     function: {
-      name: "createNewDrafts",
-      description: "Create one or more new email drafts.",
+      name: "forwardEmails",
+      description:
+        "Forward one or multiple emails to one or multiple recipients. Use this when the user wants to forward emails. If specific email IDs are provided in the user query, extract and use them.",
       parameters: {
         type: "object",
         properties: {
-          extraContext: { type: "string", description: "extra Draft content" },
-          emails: {
+          emailIds: {
             type: "array",
-            description: "email addresses",
-            items: { type: "string", description: "Individual email address" }
+            description:
+              "array of email IDs to forward (if multiple specified)",
+            items: { type: "string", description: "Individual email ID" },
           },
-          attachments:  {
+          recipients: {
+            type: "array",
+            description: "email addresses to forward to",
+            items: { type: "string", description: "Individual email address" },
+          },
+          extraContext: {
+            type: "string",
+            description: "Optional message to include with the forwarded email",
+          },
+        },
+        required: ["recipients"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "draftResponse",
+      description:
+        "Create draft replies to one or multiple emails. Use this when the user wants to respond to emails with message drafts. If specific email IDs are provided in the user query, extract and use them.",
+      parameters: {
+        type: "object",
+        properties: {
+          emailIds: {
+            type: "array",
+            description:
+              "array of email IDs to reply to (if multiple specified)",
+            items: { type: "string", description: "Individual email ID" },
+          },
+          extraContext: {
+            type: "string",
+            description:
+              "Any additional instructions the user gives for the reply.",
+          },
+          attachments: {
             type: "array",
             description: "Files the user selected in the chat to attach.",
             items: {
               type: "object",
               properties: {
                 fileName: { type: "string" },
-                s3Key:    { type: "string" }
+                s3Key: { type: "string" },
               },
-              required: ["fileName","s3Key"]
-            }
-          }
+              required: ["fileName", "s3Key"],
+            },
+          },
         },
-        required: ["extraContext", "emails"]
-      }
+        required: ["extraContext"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "createNewDrafts",
+      description:
+        "Create one or more new email drafts. Not replies to existing emails. Use this for outbound emails to new recipients. If user has selected emails, they will be used as reference context.",
+      parameters: {
+        type: "object",
+        properties: {
+          extraContext: {
+            type: "string",
+            description: "Draft content and instructions",
+          },
+          emails: {
+            type: "array",
+            description: "email addresses to send new drafts to",
+            items: { type: "string", description: "Individual email address" },
+          },
+          referenceEmailIds: {
+            type: "array",
+            description:
+              "optional array of email IDs to use as reference context (not recipients)",
+            items: {
+              type: "string",
+              description: "Individual email ID for context",
+            },
+          },
+          attachments: {
+            type: "array",
+            description: "Files the user selected in the chat to attach.",
+            items: {
+              type: "object",
+              properties: {
+                fileName: { type: "string" },
+                s3Key: { type: "string" },
+              },
+              required: ["fileName", "s3Key"],
+            },
+          },
+        },
+        required: ["extraContext", "emails"],
+      },
     },
   },
 ];
@@ -291,7 +323,8 @@ async function actionable(
   clientQuery,
   refreshToken,
   user_profile,
-  attachments
+  attachments,
+  SelectedEmails
 ) {
   try {
     console.log("profile: " + user_profile);
@@ -311,28 +344,43 @@ async function actionable(
     const sysAttach =
       attachments && attachments.length
         ? "\nFiles selected:\n" +
-          attachments.map(f => `- ${f.fileName}`).join("\n")
+          attachments.map((f) => `- ${f.fileName}`).join("\n")
         : "";
-
 
     console.log(
       "[DEBUG] 3. Before GPT call — using system prompt with files:",
       attachments.map((f) => f.fileName)
     );
 
+    // If selectedEmails provided, add them to the context for the LLM
+    let enhancedQuery = clientQuery;
+    if (SelectedEmails.length > 0) {
+      const emailIds = SelectedEmails.map((e) => e.emailId || e.id).join(", ");
+      enhancedQuery = `${clientQuery}. Use these specific email IDs: ${emailIds}`;
+      console.log(
+        `[ACTION] Enhanced query with selected emails: ${enhancedQuery}`
+      );
+    }
+
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
-      messages: [{
+      messages: [
+        {
           role: "system",
           content: sysBase + sysAttach,
-        }, { role: "user", content: clientQuery }],
+        },
+        { role: "user", content: enhancedQuery },
+      ],
       tools: tools,
       tool_choice: "auto",
     });
 
     const toolCall = response.choices[0].message.tool_calls?.[0];
     console.log("[DEBUG] 4. GPT chose tool:", toolCall?.function.name);
-    console.log("[DEBUG] 4. Tool args.attachments:", toolCall?.function.arguments);
+    console.log(
+      "[DEBUG] 4. Tool args.attachments:",
+      toolCall?.function.arguments
+    );
     console.log(response.choices[0].message);
     if (!toolCall) {
       const responseMessage = response.choices[0].message.content;
@@ -344,6 +392,15 @@ async function actionable(
     const functionName = toolCall.function.name;
     const args = JSON.parse(toolCall.function.arguments);
 
+    // If createNewDrafts and SelectedEmails provided, use them as reference context
+    if (functionName === "createNewDrafts" && SelectedEmails.length > 0) {
+      const referenceEmailIds = SelectedEmails.map((e) => e.emailId || e.id);
+      args.referenceEmailIds = referenceEmailIds;
+      console.log(
+        `[ACTION] Using ${referenceEmailIds.length} selected emails as reference context for new drafts`
+      );
+    }
+
     // Check if emailId is required
     const requiresEmailId = [
       "archiveEmails",
@@ -354,8 +411,40 @@ async function actionable(
 
     if (requiresEmailId) {
       let emailId = args.emailId;
+
+      // If SelectedEmails are provided, use them directly
+      if (SelectedEmails.length > 0) {
+        // For functions that handle multiple emails (like forwardEmails), pass the array
+        if (functionName === "forwardEmails") {
+          args.emailIds = SelectedEmails.map((e) => e.emailId || e.id);
+        } else {
+          // For single email functions, use the first selected email
+          args.emailId = SelectedEmails[0].emailId || SelectedEmails[0].id;
+        }
+
+        console.log(
+          `[ACTION] Using selected emails for ${functionName}:`,
+          args.emailIds || args.emailId
+        );
+
+        const result = await executeFunction(
+          functionName,
+          args,
+          refreshToken,
+          socket,
+          user_profile,
+          attachments,
+          SelectedEmails
+        );
+        addToConversation(socket.id, result, "assistant");
+        socket.emit("response", {
+          message: result,
+        });
+        return;
+      }
+
       if (!emailId) {
-        // If emailId isn't provided, search for it
+        // If emailId isn't provided and no SelectedEmails, search for it
         socket.emit("status", "searching emails for action");
 
         const extractContextPrompt = `The following is the user's query: "${clientQuery}".
@@ -584,23 +673,31 @@ async function executeFunction(
   socket.emit("status", "performing action");
   switch (functionName) {
     case "label":
-      return await relabel(refreshToken, args.emailId, args.labelName, socket);
+      return await relabel(
+        refreshToken,
+        args.emailIds || args.emailId,
+        args.labelName,
+        socket
+      );
     case "draftResponse":
-      const uiAttachment  = attachments;              // from socket payload
-      const gptAttachment = args.attachments || [];   // from GPT
-      if ((!args.attachments || args.attachments.length === 0) && attachments?.length) {
+      const uiAttachment = attachments; // from socket payload
+      const gptAttachment = args.attachments || []; // from GPT
+      if (
+        (!args.attachments || args.attachments.length === 0) &&
+        attachments?.length
+      ) {
         args.attachments = attachments;
       }
-      const mergedAttachments = gptAttachment.map(g => {
-        const match = uiAttachment.find(u => u.fileName === g.fileName);
-        return match || g;         // prefer UI version if found
+      const mergedAttachments = gptAttachment.map((g) => {
+        const match = uiAttachment.find((u) => u.fileName === g.fileName);
+        return match || g; // prefer UI version if found
       });
 
-  console.log("[DEBUG] reply mergedAttachments:", mergedAttachments);
+      console.log("[DEBUG] reply mergedAttachments:", mergedAttachments);
       return await singleDraft(
         refreshToken,
         args.extraContext,
-        args.emailId,
+        args.emailIds || args.emailId,
         socket,
         user_profile,
         mergedAttachments
@@ -611,25 +708,35 @@ async function executeFunction(
         Array.isArray(args.emails) && args.emails.length
           ? args.emails
           : [socket.handshake.query.userEmail || "me"]; // fallback to self
-      const uiAttachments  = attachments;
+      const uiAttachments = attachments;
       const gptAttachments = args.attachments || [];
-      const finalAttachments = gptAttachments.map(g => {
-        const match = uiAttachments.find(u => u.fileName === g.fileName);
+      const finalAttachments = gptAttachments.map((g) => {
+        const match = uiAttachments.find((u) => u.fileName === g.fileName);
         return match || g;
       });
 
-      console.log("[DEBUG] downloading key will be:", finalAttachments[0]?.s3Key);
+      console.log(
+        "[DEBUG] downloading key will be:",
+        finalAttachments[0]?.s3Key
+      );
       console.log(
         "[DEBUG] 5. executeFunction → createNewDrafts — emails:",
         emails
       );
 
-      if (emails.length === 1 &&
-      emails[0].toLowerCase() === (socket.handshake.query.userEmail || '').toLowerCase()) {
+      if (
+        emails.length === 1 &&
+        emails[0].toLowerCase() ===
+          (socket.handshake.query.userEmail || "").toLowerCase()
+      ) {
         // Treat as a single reply
         return singleDraft(
-          refreshToken, args.extraContext, /* emailId */ null,
-          socket, user_profile, finalAttachments
+          refreshToken,
+          args.extraContext,
+          args.emailIds || args.emailId,
+          socket,
+          user_profile,
+          finalAttachments
         );
       }
 
@@ -639,7 +746,16 @@ async function executeFunction(
         args.extraContext,
         socket,
         user_profile,
-        finalAttachments
+        finalAttachments,
+        args.referenceEmailIds
+      );
+    case "forwardEmails":
+      return await forwardEmails(
+        refreshToken,
+        args.emailIds || args.emailId, // Handle both multiple and single email IDs
+        args.recipients,
+        socket,
+        args.extraContext || ""
       );
     default:
       throw new Error("Unknown function");
@@ -648,7 +764,13 @@ async function executeFunction(
 
 // Updated setupSocket to use the new classification
 
-async function query(socket, userId, clientQuery, user_profile) {
+async function query(
+  socket,
+  userId,
+  clientQuery,
+  user_profile,
+  SelectedEmails
+) {
   // Basic performance logging
   const startTime = Date.now();
   const logPerformance = (step, stepStartTime = Date.now()) => {
@@ -686,12 +808,30 @@ async function query(socket, userId, clientQuery, user_profile) {
 
     socket.emit("status", "searching emails");
     const retrievalStartTime = Date.now();
+    let fullEmails;
+    let searchTiming;
 
-    const searchResult = await retrieveFullEmail(userId, rewritten_query);
+    if (SelectedEmails.length === 0) {
+      // Perform RAG search
+      const searchResult = await retrieveFullEmail(userId, rewritten_query);
+      fullEmails = searchResult.emails;
+      searchTiming = searchResult.searchTiming;
+    } else {
+      // Use pre-selected emails, normalize the structure
+      fullEmails = SelectedEmails.map((email) => ({
+        ...email,
+        emailId: email.id || email.emailId, // Handle both id and emailId fields
+      }));
+      // No search performed, so create dummy timing
+      searchTiming = {
+        embedding: 0,
+        vectorSearch: 0,
+        chunkRetrieval: 0,
+        total: 0,
+      };
+    }
+
     const retrievalDuration = Date.now() - retrievalStartTime;
-
-    const fullEmails = searchResult.emails;
-    const searchTiming = searchResult.searchTiming;
 
     // Log detailed breakdown with search timing
     console.log(
@@ -946,10 +1086,21 @@ async function setupSocket(io) {
       const text =
         typeof clientPayload === "string" ? clientPayload : clientPayload.text;
       const attachments =
-        typeof clientPayload === "string" ? [] : clientPayload.attachments || [];
+        typeof clientPayload === "string"
+          ? []
+          : clientPayload.attachments || [];
+
+      const SelectedEmails = clientPayload.emailContext;
+      if (!SelectedEmails) {
+        console.log("No specific emails provided, using all emails");
+      } else {
+        console.log("Specific emails provided, using them");
+      }
       let clientQuery = text;
-      console.log(clientPayload);
-      console.log("[DEBUG] 1. After parsing payload — attachments:", attachments);
+      console.log(
+        "[DEBUG] 1. After parsing payload — attachments:",
+        attachments
+      );
       const userId = socket.handshake.query.userId;
       if (!userId) {
         socket.emit("error", "Missing userId");
@@ -1029,7 +1180,7 @@ async function setupSocket(io) {
         // Call the query function with socket, userId, and the client's query
         socket.emit("status", "lets start processing your query...");
         console.log(user_profile);
-        await query(socket, userId, clientQuery, user_profile);
+        await query(socket, userId, clientQuery, user_profile, SelectedEmails);
       } else if (classificationResponse === "action") {
         // Call the command function with socket, userId, and the client's command
         socket.emit("status", "lets start processing your command...");
@@ -1039,7 +1190,8 @@ async function setupSocket(io) {
           clientQuery,
           refreshToken,
           user_profile,
-          attachments
+          attachments,
+          SelectedEmails
         );
       }
     });

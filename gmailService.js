@@ -12,7 +12,7 @@ const AWS = require("aws-sdk");
 const s3 = new AWS.S3({
   region: process.env.AWS_REGION,
   credentials: {
-    accessKeyId:     process.env.AWS_ACCESS_KEY_ID,
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   },
 });
@@ -706,7 +706,7 @@ async function createDraft(
 
     // Append each attachment
     for (const f of attachments) {
-      console.log(process.env.S3_BUCKET)
+      console.log(process.env.S3_BUCKET);
       console.log("[DEBUG] downloading key:", f.s3Key);
       const { Body } = await s3
         .getObject({
@@ -1136,21 +1136,88 @@ async function massOutreachDraft(
   extraContext,
   socket,
   user_profile,
-  attachments = []
+  attachments = [],
+  referenceEmailIds = []
 ) {
-  if (emails.length === 1 && emails[0] === (socket.handshake.query.userEmail || '').toLowerCase()) {
+  if (
+    emails.length === 1 &&
+    emails[0] === (socket.handshake.query.userEmail || "").toLowerCase()
+  ) {
     // GPT accidentally used the outreach tool for a self-reply.
     return singleDraft(
-       refreshToken,
-       extraContext,
-       /*emailId*/ null,
-       socket,
-       user_profile,
-       attachments);
+      refreshToken,
+      extraContext,
+      /*emailId*/ null,
+      socket,
+      user_profile,
+      attachments
+    );
   }
+
   const bool = true;
   let draftNumber = 1;
   const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
+
+  // Extract context from reference emails if provided
+  let referenceContext = "";
+  if (referenceEmailIds && referenceEmailIds.length > 0) {
+    socket.emit("status", "extracting context from reference emails");
+    console.log(
+      `[OUTREACH] Processing ${referenceEmailIds.length} reference emails for context`
+    );
+
+    try {
+      const referenceContents = await Promise.all(
+        referenceEmailIds.map((emailId) =>
+          getMessageDetails(accessToken, emailId)
+        )
+      );
+
+      // Generate context summary using OpenAI
+      const contextPrompt = `
+Analyze the following emails and extract key information that would be useful as context for drafting new emails:
+
+${referenceContents
+  .map(
+    (content, index) => `
+Email ${index + 1}:
+${content}
+`
+  )
+  .join("\n")}
+
+Provide a concise summary of:
+1. Key topics and decisions
+2. Important dates or deadlines  
+3. Relevant people and roles
+4. Action items or conclusions
+5. Any project or business context
+
+Format as a clear, organized summary that can be used as reference context for new email drafts.
+`;
+
+      const contextCompletion = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are an assistant that extracts and summarizes key information from emails to provide useful context for new communications.",
+          },
+          { role: "user", content: contextPrompt },
+        ],
+      });
+
+      referenceContext = contextCompletion.choices[0].message.content;
+      console.log(
+        `[OUTREACH] Generated context summary from ${referenceEmailIds.length} reference emails`
+      );
+    } catch (error) {
+      console.error("[OUTREACH] Error extracting reference context:", error);
+      referenceContext =
+        "Note: Could not extract context from reference emails.";
+    }
+  }
 
   const draftedMessageIds = []; // Store all messageIds
   let draftResponse;
@@ -1158,18 +1225,31 @@ async function massOutreachDraft(
   for (let email of emails) {
     socket.emit(
       "status",
-      "drafting email for email" + draftNumber + "/" + emails.length
+      `drafting email ${draftNumber}/${emails.length} to ${email}`
     );
 
-    const prompt = `
-I want you to draft an email using the following instruction: ${extraContext}. Use the Users profile as additional context: ${user_profile}. The email should be of the same tone as the instruction. Respond with a JSON object containing two fields: "subject" (the email subject line) and "emailContent" (the body of the draft email). Ensure the response is formatted as valid JSON.
+    const basePrompt = `
+I want you to draft an email using the following instruction: ${extraContext}. Use the Users profile as additional context: ${user_profile}. The email should be of the same tone as the instruction.`;
+
+    const referencePrompt = referenceContext
+      ? `
+
+Reference Context (use as background information, DO NOT reply to these emails):
+${referenceContext}
+
+Incorporate relevant information from the reference context into your new email draft where appropriate.`
+      : "";
+
+    const prompt = `${basePrompt}${referencePrompt}
+
+Respond with a JSON object containing two fields: "subject" (the email subject line) and "emailContent" (the body of the draft email). Ensure the response is formatted as valid JSON.
 `;
     const sysBase =
       "You can attach any files provided via the `attachments` array when drafting emails.";
     const sysAttach =
       attachments && attachments.length
         ? "\nFiles selected:\n" +
-          attachments.map(f => `- ${f.fileName}`).join("\n")
+          attachments.map((f) => `- ${f.fileName}`).join("\n")
         : "";
 
     const completion = await openai.chat.completions.create({
@@ -1177,7 +1257,10 @@ I want you to draft an email using the following instruction: ${extraContext}. U
       messages: [
         {
           role: "system",
-          content: "You are an assistant that helps draft emails" + sysBase + sysAttach,
+          content:
+            "You are an assistant that helps draft emails" +
+            sysBase +
+            sysAttach,
         },
         { role: "user", content: prompt },
       ],
@@ -1210,82 +1293,333 @@ I want you to draft an email using the following instruction: ${extraContext}. U
     draftNumber++;
   }
 
+  console.log(
+    `[OUTREACH] Completed ${draftedMessageIds.length}/${emails.length} drafts${
+      referenceEmailIds.length > 0
+        ? ` using ${referenceEmailIds.length} reference emails`
+        : ""
+    }`
+  );
+
+  const responseMessage = referenceContext
+    ? `Emails drafted successfully using ${referenceEmailIds.length} reference emails for context`
+    : "Emails drafted successfully";
+
   socket.emit("response", {
-    message: "Emails drafted successfully",
+    message: responseMessage,
     emailIds: draftedMessageIds,
+    referenceEmailIds:
+      referenceEmailIds.length > 0 ? referenceEmailIds : undefined,
   });
 }
 
 async function singleDraft(
   refreshToken,
   extraContext,
-  emailId,
+  emailIds,
   socket,
   user_profile,
   attachments = []
 ) {
   const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
 
-  socket.emit("status", "fetching email content");
-  const emailContent = await getMessageDetails(accessToken, emailId);
+  // Normalize input to array
+  const emailArray = Array.isArray(emailIds) ? emailIds : [emailIds];
+  const draftedMessageIds = [];
+  let draftCount = 1;
 
-  socket.emit("status", "consuming tokens");
-  const latestEmail = await getOriginalEmailDetails2(accessToken, emailId);
-  const originalSMTPMessageId = await getOriginalSMTPMessageId(
-    accessToken,
-    emailId
-  );
-  const subject = await getOriginalSubject(accessToken, emailId);
+  for (let emailId of emailArray) {
+    socket.emit(
+      "status",
+      `drafting reply ${draftCount}/${emailArray.length} for email ${emailId}`
+    );
 
-  const prompt = `Here is an email for which we need to draft a response: ${emailContent}. Use additonal context from user profile: ${user_profile}. * Only use user profile information if its relevant!! * Please complete the email draft with a suitable response based on this extra context : ${extraContext}.  The response should be concise and should address the main points of the email. It should also be of the same tone as the original email. Only respond with the body of the draft email.`;
-  // console.log("Promptt:", prompt);
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o",
-    messages: [
-      {
-        role: "system",
-        content: "You are an assistant that helps draft emails.",
-      },
-      { role: "user", content: prompt },
-    ],
-  });
-  const draftedEmail = completion.choices[0].message.content;
-  console.log(latestEmail);
-  let email_id = await createDraft(
-    accessToken,
-    latestEmail.threadId,
-    draftedEmail,
-    latestEmail,
-    originalSMTPMessageId,
-    subject,
-    false,
-    attachments
-  );
+    try {
+      console.log(
+        `[DRAFT] Processing email ${emailId} (${draftCount}/${emailArray.length})`
+      );
 
-  //async function createDraft(accessToken, threadId, messageDescription, toEmail, originalSMTPMessageId, subject) {
+      const emailContent = await getMessageDetails(accessToken, emailId);
+      const latestEmail = await getOriginalEmailDetails2(accessToken, emailId);
+      const originalSMTPMessageId = await getOriginalSMTPMessageId(
+        accessToken,
+        emailId
+      );
+      const subject = await getOriginalSubject(accessToken, emailId);
+
+      const prompt = `Here is an email for which we need to draft a response: ${emailContent}. Use additonal context from user profile: ${user_profile}. * Only use user profile information if its relevant!! * Please complete the email draft with a suitable response based on this extra context : ${extraContext}.  The response should be concise and should address the main points of the email. It should also be of the same tone as the original email. Only respond with the body of the draft email.`;
+
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          {
+            role: "system",
+            content: "You are an assistant that helps draft emails.",
+          },
+          { role: "user", content: prompt },
+        ],
+      });
+
+      const draftedEmail = completion.choices[0].message.content;
+      console.log(`[DRAFT] Generated response for email ${emailId}`);
+
+      let email_id = await createDraft(
+        accessToken,
+        latestEmail.threadId,
+        draftedEmail,
+        latestEmail,
+        originalSMTPMessageId,
+        subject,
+        false,
+        attachments
+      );
+
+      draftedMessageIds.push(email_id.messageId);
+      console.log(
+        `[DRAFT] Created draft ${email_id.messageId} for email ${emailId}`
+      );
+    } catch (error) {
+      console.error(`[DRAFT] Error processing email ${emailId}:`, error);
+      // Continue with other emails even if one fails
+    }
+
+    draftCount++;
+  }
+
+  const successCount = draftedMessageIds.length;
+  const message =
+    emailArray.length === 1
+      ? "I have drafted the email"
+      : `I have drafted ${successCount}/${emailArray.length} email responses`;
 
   socket.emit("response", {
-    message: "I have drafted the email",
-    emailIds: email_id.messageId,
+    message: message,
+    emailIds: draftedMessageIds,
+    originalEmailIds: emailArray,
   });
 
-  console.log("drafted");
+  console.log(`[DRAFT] Completed ${successCount}/${emailArray.length} drafts`);
 }
 
-async function relabel(refreshToken, emailId, labelName, socket) {
+async function relabel(refreshToken, emailIds, labelName, socket) {
   console.log(refreshToken);
   const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
   const labelId = await getOrCreatePriorityLabel(accessToken, labelName);
 
-  socket.emit("status", "adding labels");
+  // Normalize input to array
+  const emailArray = Array.isArray(emailIds) ? emailIds : [emailIds];
+  const labeledEmailIds = [];
+  let labelCount = 1;
 
-  await applyLabelToEmail(accessToken, emailId, labelId);
+  for (let emailId of emailArray) {
+    socket.emit(
+      "status",
+      `adding label "${labelName}" to email ${labelCount}/${emailArray.length}`
+    );
+
+    try {
+      console.log(
+        `[LABEL] Processing email ${emailId} (${labelCount}/${emailArray.length})`
+      );
+
+      await applyLabelToEmail(accessToken, emailId, labelId);
+      labeledEmailIds.push(emailId);
+
+      console.log(
+        `[LABEL] Successfully labeled email ${emailId} with "${labelName}"`
+      );
+    } catch (error) {
+      console.error(`[LABEL] Error labeling email ${emailId}:`, error);
+      // Continue with other emails even if one fails
+    }
+
+    labelCount++;
+  }
+
+  const successCount = labeledEmailIds.length;
+  const message =
+    emailArray.length === 1
+      ? `I have added "${labelName}" to the email`
+      : `I have added "${labelName}" to ${successCount}/${emailArray.length} emails`;
 
   socket.emit("response", {
-    message: "I have added " + labelName + " to the email",
-    emailId: emailId,
+    message: message,
+    emailIds: labeledEmailIds,
+    labelName: labelName,
   });
-  console.log("relabelled");
+
+  console.log(
+    `[LABEL] Completed labeling ${successCount}/${emailArray.length} emails with "${labelName}"`
+  );
+}
+
+async function forwardEmails(
+  refreshToken,
+  emailIds,
+  recipients,
+  socket,
+  extraContext = ""
+) {
+  const accessToken = await getAccessTokenFromRefreshToken(refreshToken);
+
+  // Normalize inputs to arrays
+  const emailArray = Array.isArray(emailIds) ? emailIds : [emailIds];
+  const recipientArray = Array.isArray(recipients) ? recipients : [recipients];
+
+  const forwardedMessageIds = [];
+  let forwardCount = 1;
+  const totalForwards = emailArray.length * recipientArray.length;
+
+  try {
+    for (let emailId of emailArray) {
+      for (let recipient of recipientArray) {
+        socket.emit(
+          "status",
+          `forwarding email ${forwardCount}/${totalForwards} to ${recipient}`
+        );
+
+        try {
+          // Get the original email details
+          const emailContentEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/${emailId}`;
+          const sendEmailEndpoint = `https://gmail.googleapis.com/gmail/v1/users/me/messages/send`;
+
+          const response = await axios.get(emailContentEndpoint, {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              Accept: "application/json",
+            },
+            params: {
+              format: "raw",
+            },
+          });
+
+          const rawEmailData = response.data.raw;
+          const originalEmailBase64 = rawEmailData
+            .replace(/-/g, "+")
+            .replace(/_/g, "/");
+
+          // Create forwarding message with optional context
+          const forwardingMessage = createForwardingMessageWithContext(
+            recipient,
+            originalEmailBase64,
+            extraContext
+          );
+
+          const encodedMessage = Buffer.from(forwardingMessage)
+            .toString("base64")
+            .replace(/\+/g, "-")
+            .replace(/\//g, "_")
+            .replace(/=+$/, "");
+
+          const sendResponse = await axios.post(
+            sendEmailEndpoint,
+            { raw: encodedMessage },
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                "Content-Type": "application/json",
+              },
+            }
+          );
+
+          forwardedMessageIds.push(sendResponse.data.id);
+          console.log(
+            `Email ${emailId} forwarded to ${recipient} successfully.`
+          );
+        } catch (emailError) {
+          console.error(
+            `Error forwarding email ${emailId} to ${recipient}:`,
+            emailError
+          );
+          // Continue with other forwards even if one fails
+        }
+
+        forwardCount++;
+      }
+    }
+
+    const successCount = forwardedMessageIds.length;
+    const message =
+      successCount === totalForwards
+        ? `Successfully forwarded ${emailArray.length} email(s) to ${recipientArray.length} recipient(s)`
+        : `Forwarded ${successCount}/${totalForwards} emails (some may have failed)`;
+
+    socket.emit("response", {
+      message: message,
+      emailIds: emailArray,
+      recipients: recipientArray,
+      forwardedMessageIds: forwardedMessageIds,
+    });
+  } catch (error) {
+    console.error("Critical error in forwardEmails:", error);
+    socket.emit("response", {
+      message: "Error occurred while forwarding emails. Please try again.",
+      emailIds: emailArray,
+      recipients: recipientArray,
+    });
+  }
+}
+
+function createForwardingMessageWithContext(
+  forwardToEmail,
+  originalEmailBase64,
+  extraContext = ""
+) {
+  const originalEmail = Buffer.from(originalEmailBase64, "base64").toString(
+    "utf-8"
+  );
+
+  const subjectMatch = originalEmail.match(/^Subject: (.*)$/m);
+  const originalSubject = subjectMatch ? subjectMatch[1] : "No Subject";
+  const subject = originalSubject.startsWith("Fwd:")
+    ? originalSubject
+    : `Fwd: ${originalSubject}`;
+
+  const dateMatch = originalEmail.match(/^Date: (.*)$/m);
+  const originalDate = dateMatch ? dateMatch[1] : "Unknown Date";
+
+  const fromMatch = originalEmail.match(/^From: (.*)$/m);
+  const originalFrom = fromMatch ? fromMatch[1] : "Unknown Sender";
+
+  const toMatch = originalEmail.match(/^To: (.*)$/m);
+  const originalTo = toMatch ? toMatch[1] : "Unknown Receiver";
+
+  // Add extra context if provided
+  const contextMessage = extraContext.trim() ? `${extraContext}\n\n` : "";
+
+  const forwardedHeader = [
+    "---------- Forwarded message ---------",
+    `From: ${originalFrom}`,
+    `Date: ${convertToEST(originalDate)}`,
+    `Subject: ${originalSubject}`,
+    `To: ${originalTo}`,
+    "",
+  ].join("\n");
+
+  const boundary = "----=_Part_0_123456789.987654321";
+
+  const forwardingMessage = [
+    `From: me`,
+    `To: ${forwardToEmail}`,
+    `Subject: ${subject}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    `Content-Type: text/plain; charset=utf-8`,
+    "",
+    contextMessage,
+    forwardedHeader,
+    "",
+    `--${boundary}`,
+    `Content-Type: message/rfc822`,
+    "",
+    originalEmail,
+    "",
+    `--${boundary}--`,
+  ].join("\n");
+
+  return forwardingMessage;
 }
 
 module.exports = {
@@ -1311,4 +1645,5 @@ module.exports = {
   massOutreachDraft,
   singleDraft,
   relabel,
+  forwardEmails,
 };
