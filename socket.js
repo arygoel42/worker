@@ -330,6 +330,10 @@ async function actionable(
     console.log("profile: " + user_profile);
     console.log("[DEBUG] 2. Enter actionable() — attachments:", attachments);
 
+    if (SelectedEmails === undefined) {
+      SelectedEmails = [];
+    }
+
     // Add user query to conversation history
     addToConversation(socket.id, clientQuery, "user");
 
