@@ -1090,8 +1090,8 @@ async function setupSocket(io) {
           ? []
           : clientPayload.attachments || [];
 
-      const SelectedEmails = clientPayload.emailContext;
-      if (!SelectedEmails) {
+      const SelectedEmails = clientPayload.emailContext || [];
+      if (!SelectedEmails || SelectedEmails.length === 0) {
         console.log("No specific emails provided, using all emails");
       } else {
         console.log("Specific emails provided, using them");
