@@ -60,25 +60,29 @@ function getConversationStats() {
 }
 
 // ====== CONTEXT-AWARE QUERY ENHANCEMENT ======
-async function enhanceQueryWithContext(clientQuery, socketId) {
+async function getContextRelatednessScore(clientQuery, socketId) {
   const conversationHistory = getConversationHistory(socketId);
 
-  // If no conversation history, return original query
   if (conversationHistory.length === 0) {
+    console.log("[CONTEXT] No conversation history, score: 0.0");
     return {
-      enhancedQuery: clientQuery,
-      contextUsed: false,
-      reasoning: "No conversation history available",
+      score: 0.0,
+      reasoning: "No previous conversation context available",
     };
   }
 
-  // Build context from recent conversation
-  const recentContext = conversationHistory
-    .slice(-10) // Last 10 messages
-    .map((entry) => `${entry.sender}: ${entry.message}`)
+  // Get recent context (last 6 messages for relevance)
+  const recentMessages = conversationHistory.slice(-6);
+  const recentContext = recentMessages
+    .map((msg) => `${msg.sender}: ${msg.message}`)
     .join("\n");
 
-  const contextPrompt = `You are helping enhance a user query by adding conversation context. The user has an ongoing conversation and their latest query might reference previous messages for both SEARCH and ACTION purposes.
+  console.log(
+    `[CONTEXT] Analyzing relatedness with ${recentMessages.length} recent messages`
+  );
+
+  try {
+    const scorePrompt = `You are analyzing whether a user's latest query is related to their previous conversation context.
 
 **Conversation History (most recent):**
 ${recentContext}
@@ -86,82 +90,175 @@ ${recentContext}
 **Latest User Query:** "${clientQuery}"
 
 **Your Task:**
-FIRST, determine if the latest query is actually related to the previous conversation. Then decide whether to enhance or keep original.
+Determine how related the latest query is to the previous conversation context. Consider:
 
-**Step 1: Relatedness Check**
-- Does the query reference previous topics, people, or emails discussed?
-- Does it use pronouns or references that need previous context to understand?
-- Is it a follow-up action on something previously discussed?
+1. **Direct references** (pronouns like "that email", "he said", "the one we discussed", "reply to it")
+2. **Topic continuity** (same subject, person, or project being discussed)
+3. **Follow-up actions** (drafting responses, taking action on previously discussed items)
+4. **Implicit context** (query makes more sense with previous context)
 
-**Step 2: Enhancement Decision**
-- **If UNRELATED to previous conversation:** Return original query unchanged
-- **If RELATED:** Proceed with enhancement based on type below
+**Scoring Guidelines:**
+- **0.9-1.0**: Clear direct references or pronouns that need context ("that email", "reply to it", "the meeting we discussed")
+- **0.7-0.8**: Strong topic continuity (same person/project/subject as previous messages)
+- **0.5-0.6**: Moderate relation (related but could stand alone)
+- **0.3-0.4**: Weak relation (tangentially related topics)
+- **0.0-0.2**: Unrelated (completely different topic/person/subject)
 
-**Enhancement Rules (ONLY if related):**
-1. **Direct references** (like "that email", "he said", "the one we discussed", "reply to it")
-2. **Action queries that need context** (like drafting emails with previously discussed details)
-3. **Follow-up queries** that build on previous information requests
+**Examples:**
+- "project updates from Sarah" → "find that email again" = 0.95 (direct reference)
+- "meeting with team" → "draft a response" = 0.85 (follow-up action)
+- "contract terms" → "who is the project manager" = 0.75 (same project context)
+- "project updates" → "find emails from bank" = 0.1 (unrelated topics)
+
+**Response Format (JSON):**
+{
+  "score": 0.85,
+  "reasoning": "Brief explanation of why this score was assigned"
+}`;
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a context relatedness analyzer that provides confidence scores for query-context relationships.",
+        },
+        {
+          role: "user",
+          content: scorePrompt,
+        },
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0.1,
+    });
+
+    const result = JSON.parse(response.choices[0].message.content);
+
+    console.log(
+      `[CONTEXT] Relatedness score: ${result.score} - ${result.reasoning}`
+    );
+
+    return result;
+  } catch (error) {
+    console.error("[CONTEXT] Error scoring relatedness:", error);
+    return {
+      score: 0.0,
+      reasoning: "Error occurred during relatedness analysis",
+    };
+  }
+}
+
+async function enhanceQueryWithContext(clientQuery, socketId) {
+  const conversationHistory = getConversationHistory(socketId);
+
+  if (conversationHistory.length === 0) {
+    console.log("[CONTEXT] No conversation history, using original query");
+    return {
+      enhancedQuery: clientQuery,
+      contextUsed: false,
+      reasoning: "No previous conversation context available",
+    };
+  }
+
+  // Step 1: Get relatedness score
+  const scoreResult = await getContextRelatednessScore(clientQuery, socketId);
+
+  // Step 2: Decide based on confidence threshold
+  const CONFIDENCE_THRESHOLD = 0.6;
+
+  if (scoreResult.score < CONFIDENCE_THRESHOLD) {
+    console.log(
+      `[CONTEXT] ❌ Score ${scoreResult.score} below threshold ${CONFIDENCE_THRESHOLD}, using original query`
+    );
+    return {
+      enhancedQuery: clientQuery,
+      contextUsed: false,
+      reasoning: `Low confidence score (${scoreResult.score}): ${scoreResult.reasoning}`,
+    };
+  }
+
+  console.log(
+    `[CONTEXT] ✅ Score ${scoreResult.score} above threshold ${CONFIDENCE_THRESHOLD}, enhancing query`
+  );
+
+  // Step 3: Enhance the query with context
+  const recentMessages = conversationHistory.slice(-6);
+  const recentContext = recentMessages
+    .map((msg) => `${msg.sender}: ${msg.message}`)
+    .join("\n");
+
+  try {
+    const contextPrompt = `You are enhancing a user query by adding conversation context. The query has already been determined to be related to previous conversation.
+
+**Conversation History (most recent):**
+${recentContext}
+
+**Latest User Query:** "${clientQuery}"
+
+**Your Task:**
+Enhance the query by adding relevant context from the conversation history. Focus on:
+
+1. **Direct references** - Replace pronouns with specific references
+2. **Action context** - Add details needed for actions (drafting, replying, etc.)
+3. **Search context** - Add specifics to help find relevant emails
+4. **Topic details** - Include relevant people, projects, or subjects
 
 **Enhancement Strategy by Query Type:**
 
 **For SEARCH queries:** Add specific references to help find the right emails
 **For ACTION queries:** Include ALL relevant context and details from the conversation since no RAG search will happen
 
-**CRITICAL:** If the query is about a completely different topic/person/subject than what was previously discussed, DO NOT enhance it. Many users switch topics entirely.
-
 **Response Format (JSON):**
 {
   "enhancedQuery": "The improved query with context added",
-  "contextUsed": true/false,
-  "reasoning": "Brief explanation of what context was added or why none was needed"
+  "reasoning": "Brief explanation of what context was added"
 }
 
 **Examples:**
 
-**UNRELATED Queries (DO NOT enhance):**
-- User asks about "project updates from Sarah" → later asks "find emails from my bank" → keep original (different topic)
-- User discusses "meeting with team" → later asks "what did Amazon say about my order" → keep original (completely different)
-- User asks about "contract terms" → later asks "find vacation emails" → keep original (unrelated topics)
+**SEARCH Enhancement:**
+- "find that email again" → "find the project update email from Sarah about Q4 timeline delays"
+- "who is the project manager" → "who is the project manager for project xyz that Sarah mentioned"
 
-**RELATED SEARCH Queries (enhance):**
-- User asks about "project updates from Sarah" → later says "find that email again" → enhance to "find the project update email from Sarah"
-- User says "give me updates on project xyz" → later says "who is the project manager" → enhance to "who is the project manager for project xyz"
+**ACTION Enhancement:**
+- "draft a response" → "draft a response to Sarah's project update email. Include context: Sarah mentioned Q4 timeline delays, budget concerns of $50k overrun, and need for additional resources."
+- "reply saying I can't make it" → "reply to the meeting email saying I can't make it. Meeting context: scheduled for Friday 2pm, agenda includes budget review and Q1 planning."
 
-**RELATED ACTION Queries (include ALL context):**
-- User asks about "project updates from Sarah" (assistant responds with timeline details, budget concerns) → later says "draft a response" → enhance to "draft a response to Sarah's project update email. Include context: Sarah mentioned Q4 timeline delays, budget concerns of $50k overrun, and need for additional resources."
-- User asks about "meeting details" → later says "reply saying I can't make it" → enhance to "reply to the meeting email saying I can't make it. Meeting context: scheduled for Friday 2pm, agenda includes budget review and Q1 planning."
+Focus on making the query more specific and actionable while preserving the original intent.`;
 
-**STANDALONE Queries (keep original):**
-- "Find emails about vacation" with no prior context → keep original
-- "What did the bank say about my loan?" when previous conversation was about work meetings → keep original
-
-**Key Enhancement Strategy:**
-- Include specific people, topics, or email types mentioned in previous messages
-- Add context about what action should reference (meeting details, project info, etc.)
-- Preserve the original intent while making it more specific and searchable
-- Help the RAG system find the most relevant emails for comprehensive context
-
-Only enhance if there are clear references that need context. Don't change queries that are already complete.`;
-
-  try {
     const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [{ role: "user", content: contextPrompt }],
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a query enhancement assistant that adds conversation context to user queries.",
+        },
+        {
+          role: "user",
+          content: contextPrompt,
+        },
+      ],
       response_format: { type: "json_object" },
+      temperature: 0.1,
     });
 
     const result = JSON.parse(response.choices[0].message.content);
-    console.log(
-      `[CONTEXT] Query enhancement - Used context: ${result.contextUsed}, Reasoning: ${result.reasoning}`
-    );
 
-    return result;
+    console.log(`[CONTEXT] 🔧 Enhanced query: "${result.enhancedQuery}"`);
+
+    return {
+      enhancedQuery: result.enhancedQuery,
+      contextUsed: true,
+      reasoning: `Enhanced (score: ${scoreResult.score}): ${result.reasoning}`,
+    };
   } catch (error) {
-    console.error("Error enhancing query with context:", error);
+    console.error("[CONTEXT] Error enhancing query:", error);
     return {
       enhancedQuery: clientQuery,
       contextUsed: false,
-      reasoning: "Error in context enhancement",
+      reasoning: "Error occurred during context enhancement",
     };
   }
 }
