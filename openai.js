@@ -79,7 +79,7 @@ async function createDraftEmail(emailContent, promptDescription) {
   if (!emailContent, !promptDescription) {
     return null;
   }
-  const prompt = `Here is an email for which we need to draft a response: ${emailContent} Please complete the email draft with a suitable response based on this instruction: ${promptDescription}. The response should be concise and should address the main points of the email. It should also be of the same tone as the original email. Only respond with the body of the draft email.`;
+  const prompt = `Here is an email for which we need to draft a response or issue a follow up: ${emailContent} Please complete the email draft with a suitable response or follow up based on this instruction: ${promptDescription}. The response or follow up should be concise and should address the main points of the email. It should also be of the same tone as the original email. Only respond with the body of the draft email.`;
   console.log("Prompt:", prompt);
   try {
     const completion = await openai.chat.completions.create({
