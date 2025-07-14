@@ -200,14 +200,14 @@ ${recentContext}
 Enhance the query by adding relevant context from the conversation history. Focus on:
 
 1. **Direct references** - Replace pronouns with specific references
-2. **Action context** - Add details needed for actions (drafting, replying, etc.)
+2. **Action context** - Add all the specificdetails needed for writing an email using conversation context (drafting, replying, etc.)
 3. **Search context** - Add specifics to help find relevant emails
-4. **Topic details** - Include relevant people, projects, or subjects
+4. **Specific details** - Include relevant people, projects, or numbers, and topics that are important to the user's instructions for the action.
 
 **Enhancement Strategy by Query Type:**
 
 **For SEARCH queries:** Add specific references to help find the right emails
-**For ACTION queries:** Include ALL relevant context and details from the conversation since no RAG search will happen
+**For ACTION queries:** Include ALL relevant context and details from the conversation since no RAG search will happen. Make sure that specific details which are important to the user's instructions are included.
 
 **Response Format (JSON):**
 {
