@@ -1347,7 +1347,7 @@ async function singleDraft(
       );
       const subject = await getOriginalSubject(accessToken, emailId);
 
-      const prompt = `Here is an email for which we need to draft a response: ${emailContent}. Use additonal context from user profile: ${user_profile}. * Only use user profile information if its relevant!! * Please complete the email draft with a suitable response based on this extra context : ${extraContext}.  The response should be concise and should address the main points of the email. It should also be of the same tone as the original email. Only respond with the body of the draft email.`;
+      const prompt = `Here is an email for which we need to draft a response or issue a follow up: ${emailContent}. Use additonal context from user profile: ${user_profile}. * Only use user profile information if its relevant!! * Please complete the email draft with a suitable response or follow up based on this extra context : ${extraContext}.  The response or follow up should be concise and should address the main points of the email. It should also be of the same tone as the original email. Only respond with the body of the draft email.`;
 
       const completion = await openai.chat.completions.create({
         model: "gpt-4o",
