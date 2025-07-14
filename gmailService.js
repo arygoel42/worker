@@ -1225,7 +1225,7 @@ Format as a clear, organized summary that can be used as reference context for n
   for (let email of emails) {
     socket.emit(
       "status",
-      `drafting email ${draftNumber}/${emails.length} to ${email}`
+      `Drafting email: ${draftNumber}/${emails.length} to ${email}`
     );
 
     const basePrompt = `
@@ -1242,7 +1242,7 @@ Incorporate relevant information from the reference context into your new email 
 
     const prompt = `${basePrompt}${referencePrompt}
 
-Respond with a JSON object containing two fields: "subject" (the email subject line) and "emailContent" (the body of the draft email). Ensure the response is formatted as valid JSON.
+Respond with a JSON object containing two fields: "subject" (the email subject line) and "emailContent" (the body of the draft email). Ensure the response is formatted as valid JSON. Do not include special characters like '-' or '_' in the subject or emailContent.
 `;
     const sysBase =
       "You can attach any files provided via the `attachments` array when drafting emails.";
@@ -1331,7 +1331,7 @@ async function singleDraft(
   for (let emailId of emailArray) {
     socket.emit(
       "status",
-      `drafting reply ${draftCount}/${emailArray.length} for email ${emailId}`
+      `Drafting reply ${draftCount}/${emailArray.length}`
     );
 
     try {
@@ -1347,7 +1347,7 @@ async function singleDraft(
       );
       const subject = await getOriginalSubject(accessToken, emailId);
 
-      const prompt = `Here is an email for which we need to draft a response or issue a follow up: ${emailContent}. Use additonal context from user profile: ${user_profile}. * Only use user profile information if its relevant!! * Please complete the email draft with a suitable response or follow up based on this extra context : ${extraContext}.  The response or follow up should be concise and should address the main points of the email. It should also be of the same tone as the original email. Only respond with the body of the draft email.`;
+      const prompt = `Here is an email for which we need to draft a response or issue a follow up: ${emailContent}. Use additonal context from user profile: ${user_profile}. * Only use user profile information if its relevant!! * Please complete the email draft with a suitable response or issue a follow up based on this extra context : ${extraContext}.  The response or follow up or issue a follow up should be concise and should address the main points of the instructions. Only respond with the body of the draft email.`;
 
       const completion = await openai.chat.completions.create({
         model: "gpt-4o",
