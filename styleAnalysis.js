@@ -29,15 +29,13 @@ ${emailContent}
 Please analyze and return a JSON object with the following style characteristics:
 
 {
-  "tone": "professional/casual/friendly/formal/direct",
-  "language": "simple/complex/technical/conversational",
-  "formality": "very_formal/formal/neutral/informal/very_informal",
-  "personality": "brief description of communication personality",
   "common_phrases": ["list", "of", "frequently", "used", "phrases"],
-  "greeting_style": "how they typically start emails",
-  "closing_style": "how they typically end emails",
-  "writing_length": "concise/moderate/verbose",
-  "communication_preferences": "key patterns in their communication style"
+  "greeting_style": "how they typically start emails and greet in the first line with specific examples",
+  "closing_style": "how they typically end emails and sign off with specific examples",
+  "writing_length": "how long winded they are when they write emails. Concise/moderate/verbose",
+  "communication_preferences": "Key patterns in their communication style and voice. Not the kinds of emails they send, but the way they communicate in general.",
+  "avoid_phrases": "Phrases, words, or constructions they avoid using in their emails (bullets, slangs, long paragraphs, etc.)",
+  "style_guide": "A 3-5 bullet point list of how to write emails like this person. Include constructs they use like bullets, pragraph structure, etc."
 }
 
 Base your analysis only on the provided emails.`;

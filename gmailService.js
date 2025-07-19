@@ -1223,7 +1223,7 @@ Format as a clear, organized summary that can be used as reference context for n
 `;
 
       const contextCompletion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: "gpt-4o",
         messages: [
           {
             role: "system",

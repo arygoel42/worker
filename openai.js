@@ -32,7 +32,7 @@ Return only the key (as a number starting from 0) of the rule that best applies 
 
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         { role: "system", content: "You are an assistant that helps classify emails based on rules." },
         { role: "user", content: prompt }
@@ -83,7 +83,7 @@ async function createDraftEmail(emailContent, promptDescription) {
   console.log("Prompt:", prompt);
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",

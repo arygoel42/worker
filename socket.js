@@ -117,7 +117,7 @@ Determine how related the latest query is to the previous conversation context. 
 }`;
 
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
@@ -228,7 +228,7 @@ Enhance the query by adding relevant context from the conversation history. Focu
 Focus on making the query more specific and actionable while preserving the original intent.`;
 
     const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",

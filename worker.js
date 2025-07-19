@@ -412,7 +412,7 @@ app.post("/augmentedEmailSearch", async (req, res) => {
     Only return the rewritten query, and ensure it is optimized for retrieving and generating information accurately from the user's emails.`;
 
     const rewrite_response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o",
       messages: [{ role: "user", content: rewrite_prompt }],
     });
 
