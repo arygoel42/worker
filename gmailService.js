@@ -1048,7 +1048,7 @@ const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
 let Gmailprogress = 0;
 let totalEmails = 500;
-async function fetchLast50Emails(accessToken, progressCallback) {
+async function fetchLast50Emails(accessToken, progressCallback, rateLimiter = null) {
   const totalEmails = 500; // Max emails to fetch
   const oauth2Client = new google.auth.OAuth2();
   oauth2Client.setCredentials({ access_token: accessToken });
@@ -1088,33 +1088,59 @@ async function fetchLast50Emails(accessToken, progressCallback) {
 
     console.log(`Fetched ${messageIds.length} primary email IDs.`);
 
-    // Fetch email details, skipping any that fail
-    const emailDetails = [];
-    for (let i = 0; i < messageIds.length; i++) {
-      const messageId = messageIds[i];
+    // Use dynamic rate limiter for concurrent email fetching
+    if (rateLimiter) {
+      const emailProcessor = async (messageId, index) => {
+        try {
+          if (progressCallback) {
+            await progressCallback(index + 1, messageIds.length);
+          }
 
-      try {
-        if (progressCallback) {
-          await progressCallback(i + 1, messageIds.length);
+          const emailContent = await getMessageDetails(accessToken, messageId);
+          return {
+            messageId: messageId,
+            content: emailContent,
+          };
+        } catch (error) {
+          console.warn(`Failed to fetch email ${messageId}, skipping:`, error);
+          return null;
         }
+      };
 
-        const emailContent = await getMessageDetails(accessToken, messageId);
-        await delay(500); // Prevent API rate limits
+      const results = await rateLimiter.processBatch(messageIds, emailProcessor, 'email');
+      const emailDetails = results.filter(result => result && !result.error);
+      
+      console.log(`Successfully processed ${emailDetails.length} emails.`);
+      return emailDetails;
+    } else {
+      // Fallback to original sequential processing
+      const emailDetails = [];
+      for (let i = 0; i < messageIds.length; i++) {
+        const messageId = messageIds[i];
 
-        emailDetails.push({
-          messageId: messageId,
-          content: emailContent,
-        });
+        try {
+          if (progressCallback) {
+            await progressCallback(i + 1, messageIds.length);
+          }
 
-        console.log("Processed emails:", emailDetails.length);
-      } catch (error) {
-        console.warn(`Failed to fetch email ${messageId}, skipping:`, error);
-        continue; // Skip this email and move to the next one
+          const emailContent = await getMessageDetails(accessToken, messageId);
+          await delay(500); // Prevent API rate limits
+
+          emailDetails.push({
+            messageId: messageId,
+            content: emailContent,
+          });
+
+          console.log("Processed emails:", emailDetails.length);
+        } catch (error) {
+          console.warn(`Failed to fetch email ${messageId}, skipping:`, error);
+          continue; // Skip this email and move to the next one
+        }
       }
-    }
 
-    console.log(`Successfully processed ${emailDetails.length} emails.`);
-    return emailDetails;
+      console.log(`Successfully processed ${emailDetails.length} emails.`);
+      return emailDetails;
+    }
   } catch (error) {
     // Handle errors in fetching message IDs (e.g., API authentication failure)
     console.error("Error fetching email IDs:", error);

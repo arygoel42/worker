@@ -244,7 +244,7 @@ async function enforceMaxEmails(userId) {
   }
 }
 // Modified saveEmailChunks function
-async function saveEmailChunks(userId, emailId, emailText) {
+async function saveEmailChunks(userId, emailId, emailText, rateLimiter = null) {
   const MAX_RETRIES = 3;
   let retryCount = 0;
 
@@ -255,42 +255,74 @@ async function saveEmailChunks(userId, emailId, emailText) {
     try {
       console.log("Saving email chunks...");
 
-      // Enforce any user-specific limits (if applicable)
-
       // Split the email into chunks
       const chunks = chunkEmail(emailText, 512, 100);
       const vectors = [];
       const timestamp = Date.now();
 
-      // Generate embeddings for each chunk
-      for (let i = 0; i < chunks.length; i++) {
-        const embedding = await getRateLimitedEmbedding(chunks[i]);
-        vectors.push({
-          id: `${userId}_${emailId}_chunk${i}`,
-          values: embedding,
-          metadata: {
-            user_id: userId.toString(),
-            email_id: emailId.toString(),
-            chunk_id: i,
-            content: chunks[i],
-            timestamp: timestamp,
-          },
-        });
-      }
+      if (rateLimiter) {
+        // Use dynamic rate limiter for concurrent embedding generation
+        const embeddingProcessor = async (chunk, index) => {
+          const embedding = await getRateLimitedEmbedding(chunk);
+          return {
+            id: `${userId}_${emailId}_chunk${index}`,
+            values: embedding,
+            metadata: {
+              user_id: userId.toString(),
+              email_id: emailId.toString(),
+              chunk_id: index,
+              content: chunk,
+              timestamp: timestamp,
+            },
+          };
+        };
 
-      if (vectors.length === 0) {
-        console.warn(`No valid vectors to upsert for email ${emailId}`);
-        return { status: "skipped", reason: "No valid vectors" };
-      }
+        const embeddingResults = await rateLimiter.processBatch(chunks, embeddingProcessor, 'embedding');
+        vectors.push(...embeddingResults.filter(result => result && !result.error));
 
-      // Upsert vectors one at a time with a 1-second delay between each
-      for (let i = 0; i < vectors.length; i++) {
-        console.log(`Upserting vector ${i + 1} of ${vectors.length}`);
-        await index.upsert([vectors[i]]); // Upsert a single vector
+        if (vectors.length === 0) {
+          console.warn(`No valid vectors to upsert for email ${emailId}`);
+          return { status: "skipped", reason: "No valid vectors" };
+        }
 
-        // Wait 1 second before the next vector (skip delay on the last one)
-        if (i < vectors.length - 1) {
-          await delay(2000); // 1-second delay between vectors
+        // Use dynamic rate limiter for concurrent Pinecone operations
+        const pineconeProcessor = async (vector, index) => {
+          console.log(`Upserting vector ${index + 1} of ${vectors.length}`);
+          await index.upsert([vector]);
+          return { success: true, index };
+        };
+
+        await rateLimiter.processBatch(vectors, pineconeProcessor, 'pinecone');
+      } else {
+        // Fallback to original sequential processing
+        for (let i = 0; i < chunks.length; i++) {
+          const embedding = await getRateLimitedEmbedding(chunks[i]);
+          vectors.push({
+            id: `${userId}_${emailId}_chunk${i}`,
+            values: embedding,
+            metadata: {
+              user_id: userId.toString(),
+              email_id: emailId.toString(),
+              chunk_id: i,
+              content: chunks[i],
+              timestamp: timestamp,
+            },
+          });
+        }
+
+        if (vectors.length === 0) {
+          console.warn(`No valid vectors to upsert for email ${emailId}`);
+          return { status: "skipped", reason: "No valid vectors" };
+        }
+
+        // Upsert vectors one at a time with delay
+        for (let i = 0; i < vectors.length; i++) {
+          console.log(`Upserting vector ${i + 1} of ${vectors.length}`);
+          await index.upsert([vectors[i]]);
+
+          if (i < vectors.length - 1) {
+            await delay(2000);
+          }
         }
       }
 

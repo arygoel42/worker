@@ -82,14 +82,18 @@ setInterval(
 );
 
 // Add a check for shutdown state in all job processors
+const rateLimiter = require('./dynamicRateLimiter');
+
 taskQueue.process("onboarding", 5, async (job, done) => {
   console.log(`Processing onboarding task for user ${job.data.userId}...`);
   const { accessToken, userId } = job.data;
 
   activeJobs.set(job.id, { type: "onboarding", userId });
+  rateLimiter.addOnboardingJob(job.id);
 
   if (isShuttingDown) {
     activeJobs.delete(job.id);
+    rateLimiter.removeOnboardingJob(job.id);
     return done(new Error("Server is shutting down"));
   }
 
@@ -118,22 +122,25 @@ taskQueue.process("onboarding", 5, async (job, done) => {
       });
     };
 
-    emails = await fetchLast50Emails(accessToken, emailFetchProgress);
+    // Use dynamic rate limiter for email fetching
+    emails = await fetchLast50Emails(accessToken, emailFetchProgress, rateLimiter);
 
     const totalEmails = emails.length;
-    const batchSize = 5;
+    const dynamicBatchSize = rateLimiter.getConcurrency('embedding');
 
-    for (let i = 0; i < totalEmails; i += batchSize) {
+    for (let i = 0; i < totalEmails; i += dynamicBatchSize) {
       if (isShuttingDown) throw new Error("Server is shutting down");
-      const batch = emails.slice(i, Math.min(i + batchSize, totalEmails));
+      const batch = emails.slice(i, Math.min(i + dynamicBatchSize, totalEmails));
+      
+      // Use Promise.all with dynamic rate limiter for concurrent processing
       await Promise.all(
         batch.map((email) =>
-          saveEmailChunks(userId, email.messageId, email.content)
+          saveEmailChunks(userId, email.messageId, email.content, rateLimiter)
         )
       );
 
       const saveProgress = Math.round(
-        (Math.min(i + batchSize, totalEmails) / totalEmails) * 50
+        (Math.min(i + dynamicBatchSize, totalEmails) / totalEmails) * 50
       );
       await updateProgress(taskQueue.client, userId, {
         phase: "saving",
@@ -151,6 +158,7 @@ taskQueue.process("onboarding", 5, async (job, done) => {
     });
 
     activeJobs.delete(job.id);
+    rateLimiter.removeOnboardingJob(job.id);
     done(null, { status: "success", userId });
   } catch (error) {
     if (!isShuttingDown) {
@@ -170,6 +178,7 @@ taskQueue.process("onboarding", 5, async (job, done) => {
       });
     }
     activeJobs.delete(job.id);
+    rateLimiter.removeOnboardingJob(job.id);
     done(error);
   }
 });
