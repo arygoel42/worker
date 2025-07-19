@@ -286,10 +286,10 @@ async function saveEmailChunks(userId, emailId, emailText, rateLimiter = null) {
         }
 
         // Use dynamic rate limiter for concurrent Pinecone operations
-        const pineconeProcessor = async (vector, index) => {
-          console.log(`Upserting vector ${index + 1} of ${vectors.length}`);
+        const pineconeProcessor = async (vector, vectorIndex) => {
+          console.log(`Upserting vector ${vectorIndex + 1} of ${vectors.length}`);
           await index.upsert([vector]);
-          return { success: true, index };
+          return { success: true, index: vectorIndex };
         };
 
         await rateLimiter.processBatch(vectors, pineconeProcessor, 'pinecone');
