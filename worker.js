@@ -732,8 +732,8 @@ app.post("/toggleRAG", async (req, res) => {
 });
 
 // Create HTTP server
-server.listen(3023, () => {
-  console.log("Worker listening on port 3023");
+server.listen(process.env.PORT, () => {
+  console.log(`Worker listening on port ${process.env.PORT}`);
 });
 
 // Add timeout to server responses to prevent hanging connections
