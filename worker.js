@@ -378,6 +378,61 @@ app.get("/", (req, res) => {
 const searchCache = new Map();
 const SEARCH_CACHE_TTL = 60000; // 1 minute TTL for search results
 
+app.post("/retrieveEmails", async (req, res) => {
+  // Don't process new requests during shutdown
+  if (isShuttingDown) {
+    return res.status(503).json({ error: "Server is shutting down" });
+  }
+
+  const { userId, query } = req.body;
+
+  if (!userId || !query) {
+    return res.status(400).json({ error: "Missing userId or query" });
+  }
+
+  const cacheKey = `emails:${userId}:${query}`;
+  const cachedResult = searchCache.get(cacheKey);
+
+  // Return cached response if available and fresh
+  if (cachedResult && Date.now() - cachedResult.timestamp < SEARCH_CACHE_TTL) {
+    return res.json(cachedResult.data);
+  }
+
+  try {
+    // Call the RAG function to retrieve relevant emails
+    const searchResult = await retrieveFullEmail(userId, query);
+
+    // Handle both formats (direct array or object with emails property)
+    const emails = searchResult.emails || searchResult;
+
+    if (!emails || emails.length === 0) {
+      const noResult = [];
+      searchCache.set(cacheKey, { timestamp: Date.now(), data: noResult });
+      return res.status(200).json(noResult);
+    }
+
+    // Return the emails as a simple JSON array
+    const emailsArray = emails.map(email => ({
+      emailId: email.emailId,
+      content: email.content,
+      score: email.score
+    }));
+
+    // Cache the result
+    searchCache.set(cacheKey, {
+      timestamp: Date.now(),
+      data: emailsArray,
+    });
+
+    res.status(200).json(emailsArray);
+  } catch (error) {
+    console.error("Error retrieving emails:", error);
+    res
+      .status(500)
+      .json({ error: "An error occurred while retrieving emails." });
+  }
+});
+
 app.post("/augmentedEmailSearch", async (req, res) => {
   // Don't process new requests during shutdown
   if (isShuttingDown) {
